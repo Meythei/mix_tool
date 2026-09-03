@@ -6,9 +6,11 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # Runtime data (machine-specific; regenerated on first run)
 backend/data/library_cache.json
+backend/data/library_user.json
 backend/data/exports/*.wav
 backend/data/projects/*.json
 

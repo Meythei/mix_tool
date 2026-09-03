@@ -1,5 +1,7 @@
 const DECK_COLORS = ['#B8C4FF', '#FFB2BE', '#9BE3AE', '#F0C05A', '#7FD8E8', '#D6B3FF', '#C9DE7C', '#FF9E80'];
 const M3 = { onSurfaceVariant: '#C8C5D0', outline: '#8F8C97', outlineVariant: '#46454E', error: '#FFB4AB', primary: '#B8C4FF' };
+const CUE_COLORS = ['#FF4D4D', '#FFB020', '#4DDB7A', '#4DA6FF', '#B366FF', '#FF66C4', '#66FFE0', '#FFD24D'];
+const BEAT_LOOP_LENGTHS = [1, 2, 4, 8, 16, 32];
 
 const state = {
   project: null,
@@ -13,6 +15,7 @@ const state = {
   expandedAutomation: {},
   timelineWidthPx: 800,
   deckCanvases: {},
+  suggestMode: false,
 };
 
 // ---------------------------------------------------------------- utils --
@@ -581,41 +584,168 @@ function redrawAll() {
     { points: state.project.master.automation, base: state.project.master.gain, min: 0, max: 1.5, color: M3.onSurfaceVariant, ref: 1.0 }, w, 44);
 }
 
+// --------------------------------------------------------- mix assistant --
+// Fully local, rule-based harmonic/tempo compatibility scoring (Camelot wheel
+// + BPM ratio). No network calls, no model weights -- just the kind of small
+// heuristic a "local AI" button can honestly be, on offline hardware.
+
+function camelotColor(camelot) {
+  if (!camelot) return null;
+  const m = /^(\d{1,2})([AB])$/.exec(camelot);
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  const hue = ((num - 1) * 30) % 360;
+  const light = m[2] === 'B' ? 62 : 46;
+  return `hsl(${hue} 70% ${light}%)`;
+}
+
+function keyCompatibility(refCamelot, candCamelot) {
+  if (!refCamelot || !candCamelot) return 0.35;
+  if (refCamelot === candCamelot) return 1.0;
+  const a = /^(\d{1,2})([AB])$/.exec(refCamelot);
+  const b = /^(\d{1,2})([AB])$/.exec(candCamelot);
+  if (!a || !b) return 0.35;
+  const na = parseInt(a[1], 10), la = a[2];
+  const nb = parseInt(b[1], 10), lb = b[2];
+  if (na === nb && la !== lb) return 0.9; // relative major/minor
+  const dist = Math.min(Math.abs(na - nb), 12 - Math.abs(na - nb));
+  if (dist === 1 && la === lb) return 0.85; // adjacent on the wheel
+  if (dist === 0 && la === lb) return 1.0;
+  if (dist <= 2) return 0.45;
+  return 0.15;
+}
+
+function tempoCompatibility(refBpm, candBpm) {
+  if (!refBpm || !candBpm) return 0.4;
+  const ratios = [candBpm / refBpm, (candBpm * 2) / refBpm, candBpm / (refBpm * 2)];
+  let best = Infinity;
+  for (const r of ratios) best = Math.min(best, Math.abs(r - 1));
+  return clamp(1 - best / 0.08, 0, 1);
+}
+
+function compatibilityScore(ref, cand) {
+  const bpmScore = tempoCompatibility(ref.bpm, cand.bpm);
+  const keyScore = keyCompatibility(ref.camelot, cand.camelot);
+  return { score: bpmScore * 0.55 + keyScore * 0.45, bpmScore, keyScore };
+}
+
+function toggleSuggestMode() {
+  if (!state.suggestMode && !state.armedLibraryPath) {
+    toast('まず基準トラックをクリックしてアームしてください', true);
+    return;
+  }
+  state.suggestMode = !state.suggestMode;
+  document.getElementById('btnSuggest').classList.toggle('on', state.suggestMode);
+  renderLibrary();
+}
+
+// ------------------------------------------------------------- hot cues --
+
+async function persistCues(entry) {
+  try {
+    await apiPost('/api/library/cues', { path: entry.path, cues: entry.cue_points });
+  } catch (err) {
+    toast('Cue save failed: ' + err.message, true);
+  }
+}
+
+function addCueAtFraction(entry, frac) {
+  if (!entry.duration) return;
+  const time = clamp(frac, 0, 1) * entry.duration;
+  const n = entry.cue_points.length;
+  entry.cue_points.push({ id: uid(), time: Math.round(time * 100) / 100, label: `Cue ${n + 1}`, color: CUE_COLORS[n % CUE_COLORS.length] });
+  entry.cue_points.sort((a, b) => a.time - b.time);
+  renderLibrary();
+  persistCues(entry);
+}
+
+function removeCue(entry, cueId) {
+  entry.cue_points = entry.cue_points.filter(c => c.id !== cueId);
+  renderLibrary();
+  persistCues(entry);
+}
+
 // -------------------------------------------------------------- library --
 
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
-  for (const entry of state.library) {
+
+  const ref = state.suggestMode ? state.libraryByPath.get(state.armedLibraryPath) : null;
+  let items;
+  if (ref) {
+    const scored = state.library
+      .filter(e => e.path !== ref.path)
+      .map(e => ({ entry: e, ...compatibilityScore(ref, e) }))
+      .sort((a, b) => b.score - a.score);
+    items = [{ entry: ref, isRef: true }, ...scored];
+  } else {
+    items = state.library.map(e => ({ entry: e }));
+  }
+
+  for (const item of items) {
+    const entry = item.entry;
+    if (!entry.cue_points) entry.cue_points = [];
     const div = document.createElement('div');
     div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const camelot = entry.camelot;
+    const camelotStyle = camelot ? `background:${camelotColor(camelot)};color:#0c0c11;` : '';
+    const energyPct = Math.round((entry.energy || 0) * 100);
     div.innerHTML = `
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
-        ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
+        ${camelot ? `<span class="li-chip li-camelot" style="${camelotStyle}">${camelot}</span>` : (entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : '')}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
+        ${item.isRef ? `<span class="li-chip li-score li-score-ref">REF</span>` : ''}
+        ${item.score != null ? `<span class="li-chip li-score li-score-${item.score > 0.75 ? 'high' : item.score > 0.5 ? 'mid' : 'low'}">${Math.round(item.score * 100)}% match</span>` : ''}
       </div>
+      <div class="li-energy" title="Energy ${energyPct}%"><div class="li-energy-fill" style="width:${energyPct}%"></div></div>
       <canvas class="li-wave" width="220" height="22"></canvas>`;
     listEl.appendChild(div);
 
     const waveCanvas = div.querySelector('.li-wave');
+    const w = 220, h = 22, mid = h / 2;
+    const wctx = waveCanvas.getContext('2d');
     if (entry.peaks && entry.peaks.length) {
-      const ctx = waveCanvas.getContext('2d');
-      const w = 220, h = 22, mid = h / 2;
-      ctx.fillStyle = M3.primary + '99';
+      wctx.fillStyle = M3.primary + '99';
       const pw = Math.max(1, w / entry.peaks.length);
       entry.peaks.forEach((pk, i) => {
         const [mn, mx] = pk;
         const x = (i / entry.peaks.length) * w;
-        ctx.fillRect(x, mid - mx * mid, pw, Math.max(1, (mx - mn) * mid));
+        wctx.fillRect(x, mid - mx * mid, pw, Math.max(1, (mx - mn) * mid));
       });
     }
+    for (const cue of entry.cue_points) {
+      const frac = entry.duration ? clamp(cue.time / entry.duration, 0, 1) : 0;
+      const x = frac * w;
+      wctx.strokeStyle = cue.color; wctx.globalAlpha = 0.55; wctx.lineWidth = 1;
+      wctx.beginPath(); wctx.moveTo(x, 0); wctx.lineTo(x, h); wctx.stroke();
+      wctx.globalAlpha = 1;
+      wctx.fillStyle = cue.color;
+      wctx.beginPath(); wctx.moveTo(x - 3, 0); wctx.lineTo(x + 3, 0); wctx.lineTo(x, 5); wctx.closePath(); wctx.fill();
+    }
+
+    waveCanvas.title = entry.cue_points.length
+      ? 'クリック: Hot Cue追加 / 既存マーカー付近クリック: 削除'
+      : '波形クリックでHot Cueを打てます';
+    waveCanvas.addEventListener('click', e => e.stopPropagation());
+    waveCanvas.addEventListener('mousedown', e => {
+      e.stopPropagation();
+      if (!entry.duration) return;
+      const rect = waveCanvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width * w;
+      const hitCue = entry.cue_points.find(c => Math.abs((c.time / entry.duration) * w - mx) <= 5);
+      if (hitCue) removeCue(entry, hitCue.id);
+      else addCueAtFraction(entry, mx / w);
+    });
+
     div.addEventListener('click', () => {
       state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
+      if (!state.armedLibraryPath) { state.suggestMode = false; document.getElementById('btnSuggest').classList.remove('on'); }
       renderLibrary();
     });
     div.addEventListener('dragstart', e => {
@@ -667,13 +797,17 @@ function renderInspector() {
     const c = sel.clip, deck = sel.deck;
     const dur = estimateClipDuration(c, deck, state.project);
     const syncNote = deck.sync && c.source_bpm ? ` (synced ${c.source_bpm}→${state.project.master_bpm} BPM)` : (deck.sync ? ' (BPM不明: unsynced)' : '');
+    const srcEntry = state.libraryByPath.get(c.source_path);
+    const cues = (srcEntry && srcEntry.cue_points) || [];
     el.innerHTML = `
       <div class="inspector-block">
         <h4>CLIP · ${escapeHtml(deck.name)}</h4>
         <div class="insp-row"><label>Label</label><input type="text" id="fLabel" value="${escapeAttr(c.label)}"></div>
         <div class="insp-row"><label>Start (s)</label><input type="number" step="0.01" id="fStart" value="${c.timeline_start.toFixed(3)}"></div>
         <div class="insp-row"><label>Src offset (s)</label><input type="number" step="0.01" min="0" id="fOffset" value="${c.source_offset.toFixed(3)}"></div>
+        ${cues.length ? `<div class="insp-cue-row">${cues.map(cue => `<button class="cue-chip" data-cue-time="${cue.time}" style="border-color:${cue.color}" title="${escapeAttr(cue.label)} @ ${formatTime(cue.time)}">${escapeHtml(cue.label)}</button>`).join('')}</div>` : ''}
         <div class="insp-row"><label>Src length (s)</label><input type="number" step="0.01" min="0.05" id="fLength" value="${c.source_length.toFixed(3)}"></div>
+        <div class="insp-beatloop-row">${BEAT_LOOP_LENGTHS.map(n => `<button class="beatloop-chip" data-beats="${n}" title="Set source length to ${n} beat(s)">${n}</button>`).join('')}<button class="beatloop-chip beatloop-half" data-half="1" title="Halve source length">÷2</button><button class="beatloop-chip beatloop-double" data-double="1" title="Double source length">×2</button></div>
         <div class="insp-row"><label>Loop count</label><input type="number" step="1" min="1" max="256" id="fLoop" value="${c.loop_count}"></div>
         <div class="insp-row"><label>Gain (trim)</label><input type="number" step="0.01" min="0" max="4" id="fGain" value="${c.gain}"></div>
         <div class="insp-row"><label>Fade in (s)</label><input type="number" step="0.001" min="0" id="fFadeIn" value="${c.fade_in}"></div>
@@ -697,6 +831,23 @@ function renderInspector() {
     on('fSrcBpm', e => { c.source_bpm = e.target.value === '' ? null : (parseFloat(e.target.value) || null); requestRedraw(); });
     on('fReverse', e => { c.reverse = e.target.checked; requestRedraw(); });
     el.querySelectorAll('input').forEach(inp => inp.addEventListener('change', scheduleSync));
+
+    el.querySelectorAll('.cue-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        c.source_offset = Math.max(0, parseFloat(btn.dataset.cueTime) || 0);
+        renderInspector(); requestRedraw(); scheduleSync();
+      });
+    });
+    el.querySelectorAll('.beatloop-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const bpmRef = c.source_bpm || state.project.master_bpm || 120;
+        if (btn.dataset.beats) c.source_length = (60 / bpmRef) * parseInt(btn.dataset.beats, 10);
+        else if (btn.dataset.half) c.source_length = Math.max(0.05, c.source_length / 2);
+        else if (btn.dataset.double) c.source_length = c.source_length * 2;
+        renderInspector(); requestRedraw(); scheduleSync();
+      });
+    });
+
     document.getElementById('fDelete').addEventListener('click', () => {
       deck.clips = deck.clips.filter(x => x !== c);
       state.selection = null;
@@ -878,6 +1029,7 @@ function wireStaticControls() {
   });
 
   document.getElementById('btnScan').addEventListener('click', scanLibrary);
+  document.getElementById('btnSuggest').addEventListener('click', toggleSuggestMode);
   document.getElementById('btnPreview').addEventListener('click', doPreview);
   document.getElementById('btnExport').addEventListener('click', doExport);
   document.getElementById('btnSave').addEventListener('click', doSave);
@@ -893,7 +1045,11 @@ function wireStaticControls() {
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
-    else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
+    else if (e.key === 'Escape') {
+      state.armedLibraryPath = null; state.selection = null; state.suggestMode = false;
+      document.getElementById('btnSuggest').classList.remove('on');
+      renderLibrary(); requestRedraw(); renderInspector();
+    }
   });
 }
 

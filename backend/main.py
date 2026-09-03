@@ -127,6 +127,22 @@ async def api_library_reanalyze(req: dict):
     return entry
 
 
+class CuesRequest(BaseModel):
+    path: str
+    cues: list[dict]
+
+
+@app.post("/api/library/cues")
+async def api_library_cues(req: CuesRequest):
+    if not req.path:
+        raise HTTPException(status_code=400, detail="path is required")
+    try:
+        entry = await run_in_threadpool(library.set_cues, req.path, req.cues, CACHE_PATH)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Track not found in library; scan it first")
+    return entry
+
+
 # ---------------------------------------------------------------- project --
 
 @app.get("/api/project")
