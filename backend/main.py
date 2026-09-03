@@ -22,6 +22,7 @@ import library
 import storage
 from models import Project, Deck, RenderRequest
 from engine.render import render_to_wav
+from harmonic import score_pair
 
 # desktop_app.py (the frozen .exe entry point) sets this to the bundle's
 # root dir, which PyInstaller extracts read-only bytes into -- so it is NOT
@@ -122,9 +123,65 @@ async def api_library_reanalyze(req: dict):
     path = req.get("path")
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
-    library.invalidate(path, CACHE_PATH)
-    entry = await run_in_threadpool(library.get_or_analyze, path, CACHE_PATH)
+    entry = await run_in_threadpool(library.force_reanalyze, path, CACHE_PATH)
     return entry
+
+
+class CueAddRequest(BaseModel):
+    path: str
+    time: float
+
+
+@app.post("/api/library/cue/add")
+async def api_library_cue_add(req: CueAddRequest):
+    try:
+        return await run_in_threadpool(library.add_cue, req.path, req.time, CACHE_PATH)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Track not in library (scan its folder first)")
+
+
+class CueRemoveRequest(BaseModel):
+    path: str
+    cue_id: int
+
+
+@app.post("/api/library/cue/remove")
+async def api_library_cue_remove(req: CueRemoveRequest):
+    try:
+        return await run_in_threadpool(library.remove_cue, req.path, req.cue_id, CACHE_PATH)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Track not in library (scan its folder first)")
+
+
+class SuggestRequest(BaseModel):
+    path: str
+    limit: int = 12
+
+
+@app.post("/api/library/suggest")
+async def api_library_suggest(req: SuggestRequest):
+    """AI Mix Assistant: rank the rest of the library by how well it would
+    mix next against `path`, using a local (offline, no model download)
+    BPM/Camelot-key/energy heuristic -- see harmonic.score_pair."""
+    entries = library.get_library(CACHE_PATH)
+    by_path = {e["path"]: e for e in entries}
+    ref = by_path.get(req.path)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Track not in library (scan its folder first)")
+
+    ranked = []
+    for entry in entries:
+        if entry["path"] == req.path or "error" in entry:
+            continue
+        result = score_pair(ref, entry)
+        ranked.append({
+            "path": entry["path"], "filename": entry["filename"],
+            "bpm": entry.get("bpm"), "key": entry.get("key"), "camelot": entry.get("camelot"),
+            "energy": entry.get("energy"), **result,
+        })
+    ranked.sort(key=lambda r: r["score"], reverse=True)
+    return {"reference": {"path": ref["path"], "filename": ref["filename"], "camelot": ref.get("camelot")},
+            "suggestions": ranked[: max(1, min(req.limit, 50))]}
 
 
 # ---------------------------------------------------------------- project --

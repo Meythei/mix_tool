@@ -49,7 +49,11 @@
         <input id="scanFolder" type="text" class="m3-text-input" placeholder="C:\Music\... フォルダを指定してScan">
         <button id="btnScan" class="btn tonal small">Scan</button>
       </div>
-      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <label class="m3-switch-field ai-assist-row">
+        <span class="m3-switch"><input type="checkbox" id="aiAssistToggle"><span class="m3-switch-track"><span class="m3-switch-thumb"></span></span></span>
+        AI Mix Assistant <span class="hint">(local, offline)</span>
+      </label>
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置。波形クリックでHot Cue追加、右クリックで削除。</div>
       <div id="libraryList" class="library-list"></div>
     </aside>
 

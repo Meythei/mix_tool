@@ -260,7 +260,37 @@ input[type=text]:focus, input[type=number]:focus {
   background: var(--m3-surface-container-highest); color: var(--m3-on-surface-variant);
 }
 .li-chip.bpm { background: var(--m3-tertiary-container); color: var(--m3-on-tertiary-container); }
-.li-wave { height: 22px; margin-top: 6px; opacity: 0.9; border-radius: var(--m3-shape-xs); overflow: hidden; }
+.li-chip.energy-low { background: var(--m3-surface-container-highest); color: var(--m3-on-surface-variant); }
+.li-chip.energy-mid { background: var(--m3-accent-cyan); color: #003138; }
+.li-chip.energy-high { background: var(--m3-accent-amber); color: #3A2E00; }
+.li-chip.match { font-weight: 800; }
+.li-chip.match-high { background: var(--m3-tertiary); color: var(--m3-on-tertiary); }
+.li-chip.match-mid { background: var(--m3-accent-cyan); color: #003138; }
+.li-chip.match-low { background: var(--m3-surface-container-highest); color: var(--m3-outline); }
+.li-chip.match-ref { background: var(--m3-primary); color: var(--m3-on-primary); }
+.li-wave { height: 22px; margin-top: 6px; opacity: 0.9; border-radius: var(--m3-shape-xs); overflow: hidden; cursor: crosshair; position: relative; }
+
+.ai-assist-row { margin: 2px 0 10px; }
+.ai-reasons { font-size: 9.5px; color: var(--m3-on-surface-variant); margin-top: 4px; opacity: 0.85; }
+.library-item.ai-dim { opacity: 0.42; }
+.library-item.ai-dim:hover { opacity: 0.75; }
+
+.li-cues { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.cue-pill {
+  display: inline-flex; align-items: center; gap: 4px; border: none; cursor: pointer;
+  background: var(--m3-surface-container-highest); color: var(--m3-on-surface-variant);
+  font-family: 'Roboto Mono', monospace; font-size: 9.5px; font-weight: 600;
+  padding: 2px 4px 2px 8px; border-radius: var(--m3-shape-full);
+  transition: background var(--m3-effect-fast), color var(--m3-effect-fast), transform var(--m3-spring-fast);
+}
+.cue-pill:hover { background: var(--m3-secondary-container); color: var(--m3-on-secondary-container); }
+.cue-pill:active { transform: scale(0.93); }
+.cue-pill .cue-remove {
+  width: 13px; height: 13px; border-radius: var(--m3-shape-full); border: none; cursor: pointer;
+  background: rgba(255,255,255,0.14); color: inherit; font-size: 9px; line-height: 1; display: inline-flex;
+  align-items: center; justify-content: center; padding: 0;
+}
+.cue-pill .cue-remove:hover { background: var(--m3-error-container); color: var(--m3-on-error-container); }
 
 /* ================================================================ timeline */
 #timelineArea { flex: 1; display: flex; flex-direction: column; min-width: 0; }

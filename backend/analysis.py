@@ -1,12 +1,37 @@
 """Offline audio analysis for the library: BPM, rough key, duration, waveform peaks."""
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import librosa
 import soundfile as sf
 
+from harmonic import camelot_for_key
+
 ANALYSIS_SR = 22050
 PEAK_POINTS = 800
+
+# Bumped whenever analyze_file's output shape changes so library.py knows to
+# transparently re-analyze cache entries written by an older version instead
+# of silently serving them without the new fields.
+ANALYSIS_VERSION = 2
+
+# Empirical RMS band for "typical" DJ material at ANALYSIS_SR, used to map
+# raw loudness into a 1-10 energy rating. Not a perceptual loudness model --
+# just a stable, cheap signal the AI Mix Assistant uses to avoid pairing a
+# warm-up ambient track against a peak-time banger.
+_ENERGY_RMS_FLOOR = 0.02
+_ENERGY_RMS_CEIL = 0.25
+
+
+def _estimate_energy(y: np.ndarray) -> Optional[int]:
+    if y.size == 0:
+        return None
+    rms = float(np.mean(librosa.feature.rms(y=y)))
+    frac = (rms - _ENERGY_RMS_FLOOR) / (_ENERGY_RMS_CEIL - _ENERGY_RMS_FLOOR)
+    frac = min(max(frac, 0.0), 1.0)
+    return int(round(1 + frac * 9))
 
 _PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 _MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
@@ -50,7 +75,10 @@ def analyze_file(path: str) -> dict:
 
         y, sr = librosa.load(path, sr=ANALYSIS_SR, mono=True)
         if y.size == 0:
-            return {"duration": duration, "native_sr": info.samplerate, "bpm": None, "key": "?", "peaks": []}
+            return {
+                "duration": duration, "native_sr": info.samplerate, "bpm": None, "key": "?",
+                "camelot": None, "energy": None, "peaks": [], "schema_version": ANALYSIS_VERSION,
+            }
 
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
@@ -65,6 +93,8 @@ def analyze_file(path: str) -> dict:
             bpm = None
 
         key = _estimate_key(y, sr)
+        camelot = camelot_for_key(key)
+        energy = _estimate_energy(y)
         peaks = _compute_peaks(y)
 
         return {
@@ -72,7 +102,10 @@ def analyze_file(path: str) -> dict:
             "native_sr": info.samplerate,
             "bpm": bpm,
             "key": key,
+            "camelot": camelot,
+            "energy": energy,
             "peaks": peaks,
+            "schema_version": ANALYSIS_VERSION,
         }
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI, must not crash a scan
         return {"error": str(exc)}

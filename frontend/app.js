@@ -1,11 +1,14 @@
 const DECK_COLORS = ['#B8C4FF', '#FFB2BE', '#9BE3AE', '#F0C05A', '#7FD8E8', '#D6B3FF', '#C9DE7C', '#FF9E80'];
-const M3 = { onSurfaceVariant: '#C8C5D0', outline: '#8F8C97', outlineVariant: '#46454E', error: '#FFB4AB', primary: '#B8C4FF' };
+const M3 = { onSurfaceVariant: '#C8C5D0', outline: '#8F8C97', outlineVariant: '#46454E', error: '#FFB4AB', primary: '#B8C4FF', accentAmber: '#F0C05A' };
 
 const state = {
   project: null,
   library: [],
   libraryByPath: new Map(),
   armedLibraryPath: null,
+  armedCueOffset: 0,
+  aiAssist: false,
+  suggestions: null,      // { [path]: {score, reasons, ...} } for the currently armed reference track
   selection: null,
   pxPerSecond: 40,
   snap: true,
@@ -29,6 +32,18 @@ function formatTime(sec) {
   const s = sec - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
+
+// Camelot wheel color: hue walks the 12-position wheel, major (B) reads
+// bright, minor (A) reads deep -- a quick visual "does this look compatible"
+// cue, same idea as rekordbox's key-colored waveforms.
+function camelotStyle(code) {
+  const m = /^(\d+)([AB])$/.exec(code || '');
+  if (!m) return '';
+  const hue = Math.round(((parseInt(m[1], 10) - 1) / 12) * 360);
+  return m[2] === 'B' ? `background:hsl(${hue},70%,72%);color:#14131c` : `background:hsl(${hue},48%,36%);color:#f2f1f5`;
+}
+function energyClass(e) { return e == null ? '' : e <= 3 ? 'energy-low' : e <= 6 ? 'energy-mid' : 'energy-high'; }
+function matchClass(score) { return score >= 65 ? 'match-high' : score >= 40 ? 'match-mid' : 'match-low'; }
 
 let _toastTimer = null;
 function toast(msg, isError = false) {
@@ -242,10 +257,12 @@ function drawClipLane(canvas, deck, refs, w, h) {
 }
 
 function placeClipFromLibrary(deck, entry, startTime) {
-  const defaultLen = Math.min(entry.duration || 4, deck.type === 'shot' ? (entry.duration || 1) : 60);
+  const offset = clamp(state.armedCueOffset || 0, 0, Math.max(0, (entry.duration || 0) - 0.05));
+  const available = Math.max(0.05, (entry.duration || 4) - offset);
+  const defaultLen = Math.min(available, deck.type === 'shot' ? available : 60);
   const clip = {
     id: uid(), source_path: entry.path, label: basename(entry.filename || entry.path).replace(/\.[^.]+$/, ''),
-    timeline_start: Math.max(0, startTime), source_offset: 0, source_length: defaultLen,
+    timeline_start: Math.max(0, startTime), source_offset: offset, source_length: defaultLen,
     source_bpm: entry.bpm || null, loop_count: 1, gain: 1, fade_in: 0.005, fade_out: 0.005,
     pitch_semitones: 0, reverse: false,
   };
@@ -586,26 +603,54 @@ function redrawAll() {
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
-  for (const entry of state.library) {
+
+  const assistActive = !!(state.aiAssist && state.armedLibraryPath && state.suggestions);
+  let list = state.library;
+  if (assistActive) {
+    const ref = state.libraryByPath.get(state.armedLibraryPath);
+    const rest = state.library.filter(e => e.path !== state.armedLibraryPath);
+    rest.sort((a, b) => (state.suggestions[b.path]?.score ?? -1) - (state.suggestions[a.path]?.score ?? -1));
+    list = ref ? [ref, ...rest] : rest;
+  }
+
+  for (const entry of list) {
+    const isRef = assistActive && entry.path === state.armedLibraryPath;
+    const suggestion = assistActive && !isRef ? state.suggestions[entry.path] : null;
+    const dim = assistActive && !isRef && (!suggestion || suggestion.score < 35);
+
     const div = document.createElement('div');
-    div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
+    div.className = 'library-item'
+      + (state.armedLibraryPath === entry.path ? ' armed' : '')
+      + (entry.error ? ' error' : '')
+      + (dim ? ' ai-dim' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const keyText = entry.key ? escapeHtml(entry.key) + (entry.camelot ? ` · ${entry.camelot}` : '') : '';
+    const matchChip = isRef ? `<span class="li-chip match match-ref">REF</span>`
+      : suggestion ? `<span class="li-chip match ${matchClass(suggestion.score)}">${Math.round(suggestion.score)}%</span>` : '';
+    const cuesHtml = (entry.cues && entry.cues.length)
+      ? `<div class="li-cues">${entry.cues.map(c => `<button type="button" class="cue-pill" data-time="${c.time}">${formatTime(c.time)}<span class="cue-remove" data-remove="${c.id}" title="Remove cue">✕</span></button>`).join('')}</div>`
+      : '';
+
     div.innerHTML = `
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
-        ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
+        ${keyText ? `<span class="li-chip" ${entry.camelot ? `style="${camelotStyle(entry.camelot)}"` : ''}>${keyText}</span>` : ''}
+        ${entry.energy != null ? `<span class="li-chip ${energyClass(entry.energy)}">⚡ ${entry.energy}/10</span>` : ''}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
+        ${matchChip}
       </div>
-      <canvas class="li-wave" width="220" height="22"></canvas>`;
+      <canvas class="li-wave" width="220" height="22"></canvas>
+      ${cuesHtml}
+      ${suggestion && suggestion.reasons.length ? `<div class="ai-reasons">${suggestion.reasons.join(' · ')}</div>` : ''}`;
     listEl.appendChild(div);
 
     const waveCanvas = div.querySelector('.li-wave');
+    const w = 220, h = 22, mid = h / 2;
     if (entry.peaks && entry.peaks.length) {
       const ctx = waveCanvas.getContext('2d');
-      const w = 220, h = 22, mid = h / 2;
       ctx.fillStyle = M3.primary + '99';
       const pw = Math.max(1, w / entry.peaks.length);
       entry.peaks.forEach((pk, i) => {
@@ -613,15 +658,100 @@ function renderLibrary() {
         const x = (i / entry.peaks.length) * w;
         ctx.fillRect(x, mid - mx * mid, pw, Math.max(1, (mx - mn) * mid));
       });
+      if (entry.cues && entry.cues.length && entry.duration) {
+        ctx.fillStyle = M3.accentAmber;
+        for (const cue of entry.cues) {
+          const x = clamp((cue.time / entry.duration) * w, 0, w - 2);
+          ctx.fillRect(x, 0, 2, h);
+        }
+      }
     }
+
     div.addEventListener('click', () => {
-      state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
+      const wasArmed = state.armedLibraryPath === entry.path;
+      state.armedLibraryPath = wasArmed ? null : entry.path;
+      state.armedCueOffset = 0;
       renderLibrary();
+      if (state.aiAssist) refreshSuggestions();
     });
     div.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', entry.path);
       e.dataTransfer.effectAllowed = 'copy';
     });
+
+    waveCanvas.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!entry.duration) return;
+      const rect = waveCanvas.getBoundingClientRect();
+      const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      addCueToTrack(entry, frac * entry.duration);
+    });
+    waveCanvas.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!entry.cues || !entry.cues.length || !entry.duration) return;
+      const rect = waveCanvas.getBoundingClientRect();
+      const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      const t = frac * entry.duration;
+      let nearest = entry.cues[0];
+      for (const c of entry.cues) if (Math.abs(c.time - t) < Math.abs(nearest.time - t)) nearest = c;
+      removeCueFromTrack(entry, nearest.id);
+    });
+
+    div.querySelectorAll('.cue-pill').forEach(pill => {
+      pill.addEventListener('click', e => {
+        e.stopPropagation();
+        state.armedLibraryPath = entry.path;
+        state.armedCueOffset = parseFloat(pill.dataset.time) || 0;
+        renderLibrary();
+        if (state.aiAssist) refreshSuggestions();
+      });
+    });
+    div.querySelectorAll('.cue-remove').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        removeCueFromTrack(entry, parseInt(btn.dataset.remove, 10));
+      });
+    });
+  }
+}
+
+async function addCueToTrack(entry, time) {
+  try {
+    const updated = await apiPost('/api/library/cue/add', { path: entry.path, time });
+    Object.assign(entry, updated);
+    state.armedLibraryPath = entry.path;
+    state.armedCueOffset = 0;
+    renderLibrary();
+    if (state.aiAssist) refreshSuggestions();
+  } catch (err) { toast('Hot cue追加に失敗: ' + err.message, true); }
+}
+
+async function removeCueFromTrack(entry, cueId) {
+  try {
+    const updated = await apiPost('/api/library/cue/remove', { path: entry.path, cue_id: cueId });
+    Object.assign(entry, updated);
+    renderLibrary();
+  } catch (err) { toast('Hot cue削除に失敗: ' + err.message, true); }
+}
+
+// ------------------------------------------------------- AI Mix Assistant --
+// Purely local: scores every other library track against the armed reference
+// track by BPM/Camelot-key/energy proximity (backend/harmonic.py). No cloud
+// calls, nothing leaves the machine -- the on-device "AI" rekordbox doesn't
+// have and Ableton doesn't need, until you're staring at 400 tracks.
+
+async function refreshSuggestions() {
+  if (!state.aiAssist || !state.armedLibraryPath) { state.suggestions = null; return; }
+  try {
+    const res = await apiPost('/api/library/suggest', { path: state.armedLibraryPath, limit: 200 });
+    const map = {};
+    for (const s of res.suggestions) map[s.path] = s;
+    state.suggestions = map;
+    renderLibrary();
+  } catch (err) {
+    state.suggestions = null;
+    toast('AI Mix Assistant failed: ' + err.message, true);
   }
 }
 
@@ -877,6 +1007,12 @@ function wireStaticControls() {
     document.getElementById(id).addEventListener('change', scheduleSync);
   });
 
+  document.getElementById('aiAssistToggle').addEventListener('change', e => {
+    state.aiAssist = e.target.checked;
+    if (state.aiAssist) refreshSuggestions();
+    else { state.suggestions = null; renderLibrary(); }
+  });
+
   document.getElementById('btnScan').addEventListener('click', scanLibrary);
   document.getElementById('btnPreview').addEventListener('click', doPreview);
   document.getElementById('btnExport').addEventListener('click', doExport);
@@ -893,7 +1029,7 @@ function wireStaticControls() {
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
-    else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
+    else if (e.key === 'Escape') { state.armedLibraryPath = null; state.armedCueOffset = 0; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
   });
 }
 
