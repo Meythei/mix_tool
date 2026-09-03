@@ -6,6 +6,8 @@ const state = {
   library: [],
   libraryByPath: new Map(),
   armedLibraryPath: null,
+  armedCueOffset: null,   // { path, time } -- primes clip placement to start at a hot cue
+  libPreviewPath: null,   // path currently loaded into the shared per-track preview <audio>
   selection: null,
   pxPerSecond: 40,
   snap: true,
@@ -28,6 +30,40 @@ function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+// ------------------------------------------------------- Camelot wheel --
+// Harmonic-mixing helpers (rekordbox/Mixed In Key style key notation).
+// Pure client-side heuristics -- no audio analysis happens here, only the
+// "8B"/"5A" codes the backend already computed from the estimated key.
+
+function parseCamelot(code) {
+  if (!code) return null;
+  const m = /^(\d{1,2})([AB])$/.exec(code);
+  if (!m) return null;
+  return { num: parseInt(m[1], 10), letter: m[2] };
+}
+
+function camelotColor(code) {
+  const c = parseCamelot(code);
+  if (!c) return { bg: 'var(--m3-surface-container-highest)', fg: 'var(--m3-on-surface-variant)' };
+  const hue = ((c.num - 1) * 30) % 360;
+  const light = c.letter === 'B' ? 30 : 24;
+  return { bg: `hsl(${hue}, 42%, ${light}%)`, fg: `hsl(${hue}, 70%, 88%)` };
+}
+
+// Camelot-wheel compatibility of two keys, per the standard harmonic mixing
+// rules: same code, relative major/minor, or ±1 hour on the wheel = compatible.
+function camelotCompatibility(a, b) {
+  const pa = parseCamelot(a), pb = parseCamelot(b);
+  if (!pa || !pb) return { score: 50, reason: 'キー不明' };
+  if (pa.num === pb.num && pa.letter === pb.letter) return { score: 100, reason: '同キー' };
+  if (pa.num === pb.num) return { score: 90, reason: '関係調(Relative)' };
+  let d = Math.abs(pa.num - pb.num);
+  d = Math.min(d, 12 - d);
+  if (d === 1 && pa.letter === pb.letter) return { score: 75, reason: '±1 Camelot' };
+  if (d === 2 && pa.letter === pb.letter) return { score: 45, reason: '±2 Camelot' };
+  return { score: 15, reason: 'キー相性が悪い' };
 }
 
 let _toastTimer = null;
@@ -242,10 +278,12 @@ function drawClipLane(canvas, deck, refs, w, h) {
 }
 
 function placeClipFromLibrary(deck, entry, startTime) {
-  const defaultLen = Math.min(entry.duration || 4, deck.type === 'shot' ? (entry.duration || 1) : 60);
+  const primedOffset = (state.armedCueOffset && state.armedCueOffset.path === entry.path) ? state.armedCueOffset.time : 0;
+  const remaining = entry.duration ? Math.max(0.1, entry.duration - primedOffset) : 4;
+  const defaultLen = Math.min(remaining, deck.type === 'shot' ? remaining : 60);
   const clip = {
     id: uid(), source_path: entry.path, label: basename(entry.filename || entry.path).replace(/\.[^.]+$/, ''),
-    timeline_start: Math.max(0, startTime), source_offset: 0, source_length: defaultLen,
+    timeline_start: Math.max(0, startTime), source_offset: primedOffset, source_length: defaultLen,
     source_bpm: entry.bpm || null, loop_count: 1, gain: 1, fade_in: 0.005, fade_out: 0.005,
     pitch_semitones: 0, reverse: false,
   };
@@ -583,6 +621,34 @@ function redrawAll() {
 
 // -------------------------------------------------------------- library --
 
+function libraryAudioUrl(path) { return '/api/library/audio?path=' + encodeURIComponent(path); }
+
+function previewLibraryTrack(path, atTime) {
+  const audio = document.getElementById('libPreviewAudio');
+  if (state.libPreviewPath !== path) {
+    audio.src = libraryAudioUrl(path);
+    state.libPreviewPath = path;
+  }
+  const seek = () => { audio.currentTime = Math.max(0, atTime || 0); audio.play().catch(() => {}); };
+  if (audio.readyState >= 1) seek(); else audio.addEventListener('loadedmetadata', seek, { once: true });
+}
+
+async function setCue(entry, index, time) {
+  try {
+    const updated = await apiPost('/api/library/cues/set', { path: entry.path, index, time });
+    Object.assign(entry, updated);
+    renderLibrary();
+  } catch (err) { toast('Cue save failed: ' + err.message, true); }
+}
+
+async function clearCue(entry, index) {
+  try {
+    const updated = await apiPost('/api/library/cues/clear', { path: entry.path, index });
+    Object.assign(entry, updated);
+    renderLibrary();
+  } catch (err) { toast('Cue delete failed: ' + err.message, true); }
+}
+
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
@@ -592,14 +658,28 @@ function renderLibrary() {
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const camelot = camelotColor(entry.camelot);
+    const energy = entry.energy || null;
+    const cues = entry.cues || [];
+    const cueByIndex = new Map(cues.map(c => [c.index, c]));
+
+    let cuePadsHtml = '';
+    for (let i = 0; i < 8; i++) {
+      const cue = cueByIndex.get(i);
+      const primed = !!(cue && state.armedCueOffset && state.armedCueOffset.path === entry.path && Math.abs(state.armedCueOffset.time - cue.time) < 0.001);
+      cuePadsHtml += `<button type="button" class="cue-pad ${cue ? 'filled' : ''} ${primed ? 'primed' : ''}" data-cue-index="${i}" title="${cue ? `Hot Cue ${i + 1} · ${formatTime(cue.time)} (右クリックで削除)` : `Hot Cue ${i + 1} をここにセット`}">${i + 1}</button>`;
+    }
+
     div.innerHTML = `
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
-        ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
+        ${entry.camelot ? `<span class="li-chip" style="background:${camelot.bg};color:${camelot.fg}" title="${escapeAttr(entry.key || '')}">${escapeHtml(entry.camelot)}</span>` : (entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : '')}
+        ${energy ? `<span class="li-chip energy" title="Energy ${energy}/10"><span class="li-energy-bar" style="color:var(--m3-accent-amber)"><i style="width:${energy * 10}%"></i></span>${energy}</span>` : ''}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
       </div>
-      <canvas class="li-wave" width="220" height="22"></canvas>`;
+      <canvas class="li-wave" width="220" height="22" title="クリックで試聴"></canvas>
+      <div class="li-cues">${cuePadsHtml}</div>`;
     listEl.appendChild(div);
 
     const waveCanvas = div.querySelector('.li-wave');
@@ -614,15 +694,122 @@ function renderLibrary() {
         ctx.fillRect(x, mid - mx * mid, pw, Math.max(1, (mx - mn) * mid));
       });
     }
+    waveCanvas.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!entry.duration) return;
+      const rect = waveCanvas.getBoundingClientRect();
+      const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      previewLibraryTrack(entry.path, frac * entry.duration);
+    });
+
+    div.querySelectorAll('.cue-pad').forEach(btn => {
+      const index = parseInt(btn.dataset.cueIndex, 10);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const cue = cueByIndex.get(index);
+        if (cue) {
+          state.armedLibraryPath = entry.path;
+          state.armedCueOffset = { path: entry.path, time: cue.time };
+          previewLibraryTrack(entry.path, cue.time);
+          renderLibrary();
+        } else {
+          const t = (state.libPreviewPath === entry.path) ? document.getElementById('libPreviewAudio').currentTime : 0;
+          setCue(entry, index, t);
+        }
+      });
+      btn.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        const cue = cueByIndex.get(index);
+        if (!cue) return;
+        if (confirm(`Hot Cue ${index + 1} (${formatTime(cue.time)}) を削除しますか？`)) {
+          if (state.armedCueOffset && state.armedCueOffset.path === entry.path && state.armedCueOffset.time === cue.time) state.armedCueOffset = null;
+          clearCue(entry, index);
+        }
+      });
+    });
+
     div.addEventListener('click', () => {
-      state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
+      const wasArmed = state.armedLibraryPath === entry.path;
+      state.armedLibraryPath = wasArmed ? null : entry.path;
+      if (wasArmed && state.armedCueOffset && state.armedCueOffset.path === entry.path) state.armedCueOffset = null;
       renderLibrary();
+      renderMixAssistant();
     });
     div.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', entry.path);
       e.dataTransfer.effectAllowed = 'copy';
     });
   }
+}
+
+// ------------------------------------------------------- Mix Assistant --
+// Client-side "local AI": a deterministic heuristic recommender (harmonic
+// Camelot compatibility + BPM proximity + energy flow) that runs entirely
+// offline against the already-scanned library -- no model download, no
+// network call, matching the "local AI is fine at a lightweight scale" brief.
+
+function scoreCandidate(source, candidate, masterBpm) {
+  const key = camelotCompatibility(source.camelot, candidate.camelot);
+  let bpmScore = 50, bpmNote = '';
+  if (source.bpm && candidate.bpm) {
+    const diffPct = Math.abs(candidate.bpm - source.bpm) / source.bpm;
+    bpmScore = Math.max(0, 100 - diffPct * 300);
+    bpmNote = `BPM差 ${Math.abs(candidate.bpm - source.bpm).toFixed(1)}`;
+  }
+  let energyNote = '';
+  let energyScore = 60;
+  if (source.energy && candidate.energy) {
+    const d = candidate.energy - source.energy;
+    energyScore = Math.max(0, 100 - Math.abs(d) * 8);
+    energyNote = d > 0 ? 'Energy ↑' : d < 0 ? 'Energy ↓' : 'Energy 維持';
+  }
+  const total = key.score * 0.55 + bpmScore * 0.3 + energyScore * 0.15;
+  const reason = [key.reason, bpmNote, energyNote].filter(Boolean).join(' · ');
+  return { total, reason };
+}
+
+function renderMixAssistant() {
+  const el = document.getElementById('mixAssistant');
+  const sourcePath = state.armedLibraryPath || (state.selection && state.selection.type === 'clip' ? state.selection.clip.source_path : null);
+  const source = sourcePath ? state.libraryByPath.get(sourcePath) : null;
+
+  if (!source) {
+    el.innerHTML = `<div class="assistant-empty">ライブラリの曲をアーム(クリック)するか、クリップを選択すると、キー/BPMの合う候補をここに表示します。</div>`;
+    return;
+  }
+  const masterBpm = (state.project && state.project.master_bpm) || source.bpm || 120;
+  const candidates = state.library
+    .filter(e => e.path !== source.path && !e.error)
+    .map(e => ({ entry: e, ...scoreCandidate(source, e, masterBpm) }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5);
+
+  if (!candidates.length) {
+    el.innerHTML = `<div class="assistant-empty">候補がありません。ライブラリをScanしてください。</div>`;
+    return;
+  }
+  el.innerHTML = candidates.map(({ entry, total, reason }) => {
+    const hue = clamp(total, 0, 100) * 1.2; // 0=red .. 100=green(ish 120)
+    return `
+    <div class="assistant-item" data-path="${escapeAttr(entry.path)}">
+      <div class="assistant-score" style="background:hsl(${hue},70%,55%)">${Math.round(total)}</div>
+      <div class="assistant-main">
+        <div class="assistant-name">${escapeHtml(entry.filename)}</div>
+        <div class="assistant-reason">${escapeHtml(reason || '')}${entry.camelot ? ` · ${escapeHtml(entry.camelot)}` : ''}${entry.bpm ? ` · ${entry.bpm.toFixed(1)} BPM` : ''}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('.assistant-item').forEach(row => {
+    row.addEventListener('click', () => {
+      const path = row.dataset.path;
+      state.armedLibraryPath = path;
+      state.armedCueOffset = null;
+      renderLibrary();
+      renderMixAssistant();
+      toast('Armed: ' + basename(path));
+    });
+  });
 }
 
 async function scanLibrary() {
@@ -635,6 +822,7 @@ async function scanLibrary() {
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
     renderLibrary();
+    renderMixAssistant();
     toast(`Library: ${entries.length} files`);
   } catch (err) {
     toast('Scan failed: ' + err.message, true);
@@ -649,6 +837,7 @@ async function refreshLibraryFromCache(retry = 0) {
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
     renderLibrary();
+    renderMixAssistant();
     if (entries.length === 0 && retry < 8) setTimeout(() => refreshLibraryFromCache(retry + 1), 4000);
   } catch { /* backend still warming up */ }
 }
@@ -656,6 +845,7 @@ async function refreshLibraryFromCache(retry = 0) {
 // ------------------------------------------------------------ inspector --
 
 function renderInspector() {
+  renderMixAssistant();
   const el = document.getElementById('inspectorContent');
   const sel = state.selection;
   if (!sel) {
@@ -755,6 +945,7 @@ function loadProjectIntoUI(project) {
   state.project = project;
   state.selection = null;
   state.armedLibraryPath = null;
+  state.armedCueOffset = null;
   state.expandedAutomation = {};
   for (const deck of project.decks) state.expandedAutomation[deck.id] = new Set(deck.type === 'track' ? ['gain'] : []);
 
@@ -893,7 +1084,7 @@ function wireStaticControls() {
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
-    else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
+    else if (e.key === 'Escape') { state.armedLibraryPath = null; state.armedCueOffset = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
   });
 }
 

@@ -54,6 +54,10 @@ def scan_folder(root: str, cache_path: Path) -> list:
                 continue
             result = analyze_file(path)
             result["mtime"] = mtime
+            # cues are user-entered metadata, not an analysis artifact -- keep
+            # them across re-analysis (file edited/re-exported) or a stale cache.
+            if cached and cached.get("cues"):
+                result["cues"] = cached["cues"]
             cache[path] = result
 
         # drop entries that lived under this root but vanished from disk
@@ -96,6 +100,37 @@ def get_or_analyze(path: str, cache_path: Path) -> dict:
             return _entry_for(path, cache)
         result = analyze_file(path)
         result["mtime"] = mtime
+        if cached and cached.get("cues"):
+            result["cues"] = cached["cues"]
         cache[path] = result
+        _save_cache(cache_path, cache)
+        return _entry_for(path, cache)
+
+
+MAX_CUES = 8
+
+
+def set_cue(path: str, cache_path: Path, index: int, time: float, label: str = "") -> dict:
+    """Save (or overwrite) a rekordbox-style hot cue slot (0-7) on a library track."""
+    if not 0 <= index < MAX_CUES:
+        raise ValueError(f"cue index must be 0..{MAX_CUES - 1}")
+    with _lock:
+        cache = _load_cache(cache_path)
+        if path not in cache:
+            raise KeyError(path)
+        cues = [c for c in cache[path].get("cues", []) if c.get("index") != index]
+        cues.append({"index": index, "time": max(0.0, float(time)), "label": label or ""})
+        cues.sort(key=lambda c: c["index"])
+        cache[path]["cues"] = cues
+        _save_cache(cache_path, cache)
+        return _entry_for(path, cache)
+
+
+def clear_cue(path: str, cache_path: Path, index: int) -> dict:
+    with _lock:
+        cache = _load_cache(cache_path)
+        if path not in cache:
+            raise KeyError(path)
+        cache[path]["cues"] = [c for c in cache[path].get("cues", []) if c.get("index") != index]
         _save_cache(cache_path, cache)
         return _entry_for(path, cache)

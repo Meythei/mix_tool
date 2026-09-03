@@ -49,8 +49,13 @@
         <input id="scanFolder" type="text" class="m3-text-input" placeholder="C:\Music\... フォルダを指定してScan">
         <button id="btnScan" class="btn tonal small">Scan</button>
       </div>
-      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置。波形クリックで試聴、丸ボタンでHot Cue(rekordbox風)。</div>
       <div id="libraryList" class="library-list"></div>
+      <audio id="libPreviewAudio" style="display:none"></audio>
+
+      <div class="panel-title assistant-title">Mix Assistant <span class="hint">local AI</span></div>
+      <div class="library-hint">アーム中の曲と相性の良い(キー/BPM)候補をローカルで提案します(オフライン・ヒューリスティック)。</div>
+      <div id="mixAssistant" class="assistant-list"></div>
     </aside>
 
     <main id="timelineArea">

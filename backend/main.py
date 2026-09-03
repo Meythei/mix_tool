@@ -127,6 +127,52 @@ async def api_library_reanalyze(req: dict):
     return entry
 
 
+def _require_known_path(path: str) -> None:
+    # Only serve/mutate files the library scan already knows about -- this is
+    # what stops /api/library/audio from turning into an arbitrary local file
+    # disclosure endpoint.
+    known = {e["path"] for e in library.get_library(CACHE_PATH)}
+    if path not in known:
+        raise HTTPException(status_code=404, detail="Unknown library path (scan its folder first)")
+
+
+@app.get("/api/library/audio")
+async def api_library_audio(path: str):
+    _require_known_path(path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(path)
+
+
+class CueSetRequest(BaseModel):
+    path: str
+    index: int
+    time: float
+    label: str = ""
+
+
+@app.post("/api/library/cues/set")
+async def api_library_cue_set(req: CueSetRequest):
+    _require_known_path(req.path)
+    try:
+        entry = await run_in_threadpool(library.set_cue, req.path, CACHE_PATH, req.index, req.time, req.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return entry
+
+
+class CueClearRequest(BaseModel):
+    path: str
+    index: int
+
+
+@app.post("/api/library/cues/clear")
+async def api_library_cue_clear(req: CueClearRequest):
+    _require_known_path(req.path)
+    entry = await run_in_threadpool(library.clear_cue, req.path, CACHE_PATH, req.index)
+    return entry
+
+
 # ---------------------------------------------------------------- project --
 
 @app.get("/api/project")
