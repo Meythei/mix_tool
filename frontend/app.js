@@ -13,6 +13,7 @@ const state = {
   expandedAutomation: {},
   timelineWidthPx: 800,
   deckCanvases: {},
+  audition: { path: null, entry: null },
 };
 
 // ---------------------------------------------------------------- utils --
@@ -28,6 +29,48 @@ function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+// Camelot wheel color: hue walks the 12 positions of the wheel, major (B)
+// keys a touch brighter than their relative minor (A) so the two read as a
+// pair at a glance -- same idea as rekordbox's key-colored waveforms.
+function camelotColor(code) {
+  if (!code) return null;
+  const num = parseInt(code, 10);
+  if (!num) return null;
+  const hue = ((num - 1) / 12) * 360;
+  const light = code.endsWith('B') ? 72 : 60;
+  return `hsl(${hue.toFixed(0)}, 62%, ${light}%)`;
+}
+
+// Harmonic compatibility 0..1 between two Camelot codes (same code, adjacent
+// number on the same ring, or the relative major/minor all mix cleanly).
+function camelotCompat(a, b) {
+  if (!a || !b) return 0.3;
+  const na = parseInt(a, 10), nb = parseInt(b, 10);
+  const la = a.slice(-1), lb = b.slice(-1);
+  if (Number.isNaN(na) || Number.isNaN(nb)) return 0.3;
+  if (a === b) return 1.0;
+  if (na === nb && la !== lb) return 0.85;
+  const diff = Math.min(Math.abs(na - nb), 12 - Math.abs(na - nb));
+  if (diff === 1 && la === lb) return 0.75;
+  if (diff === 1 && la !== lb) return 0.5;
+  return 0.15;
+}
+
+// BPM compatibility 0..1: closeness to the same tempo scores highest, exact
+// half/double time next (a common DJ trick), other simple ratios a little.
+function bpmCompat(ref, cand) {
+  if (!ref || !cand) return 0.3;
+  const ratios = [[1, 1], [2, 0.85], [0.5, 0.85], [4 / 3, 0.5], [3 / 4, 0.5]];
+  let best = 0;
+  for (const [r, weight] of ratios) {
+    const target = ref * r;
+    const pct = Math.abs(cand - target) / target;
+    const s = Math.max(0, 1 - pct / 0.08) * weight;
+    if (s > best) best = s;
+  }
+  return best;
 }
 
 let _toastTimer = null;
@@ -62,8 +105,77 @@ async function apiPut(path, body) {
 
 let _syncTimer = null;
 function scheduleSync() {
+  pushHistoryIfChanged();
   if (_syncTimer) clearTimeout(_syncTimer);
   _syncTimer = setTimeout(() => { apiPut('/api/project', state.project).catch(err => console.warn('sync failed', err)); }, 500);
+}
+
+async function syncProjectNow() {
+  if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+  try { await apiPut('/api/project', state.project); } catch (err) { console.warn('sync failed', err); }
+}
+
+// -------------------------------------------------------------- history --
+// Ableton-style undo/redo: every meaningful commit funnels through
+// scheduleSync() already (drag mouseup, control 'change' events, add/remove
+// actions), so hooking the snapshot there gives one undo step per gesture
+// without touching every mutation call site individually.
+
+const history = { stack: [], redo: [], last: null, suspend: false };
+
+function historySnapshotString() { return JSON.stringify(state.project); }
+
+function initHistory() {
+  history.stack = [];
+  history.redo = [];
+  history.last = state.project ? historySnapshotString() : null;
+  updateHistoryButtons();
+}
+
+function pushHistoryIfChanged() {
+  if (history.suspend || !state.project) return;
+  const cur = historySnapshotString();
+  if (history.last === null) { history.last = cur; return; }
+  if (cur === history.last) return;
+  history.stack.push(history.last);
+  if (history.stack.length > 100) history.stack.shift();
+  history.redo = [];
+  history.last = cur;
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  const u = document.getElementById('btnUndo'), r = document.getElementById('btnRedo');
+  if (u) u.disabled = history.stack.length === 0;
+  if (r) r.disabled = history.redo.length === 0;
+}
+
+function undo() {
+  if (!history.stack.length) return;
+  const cur = historySnapshotString();
+  const prev = history.stack.pop();
+  history.redo.push(cur);
+  history.last = prev;
+  history.suspend = true;
+  loadProjectIntoUI(JSON.parse(prev));
+  history.suspend = false;
+  updateHistoryButtons();
+  syncProjectNow();
+  toast('Undo');
+}
+
+function redo() {
+  if (!history.redo.length) return;
+  const cur = historySnapshotString();
+  const next = history.redo.pop();
+  history.stack.push(cur);
+  history.last = next;
+  history.suspend = true;
+  loadProjectIntoUI(JSON.parse(next));
+  history.suspend = false;
+  updateHistoryButtons();
+  syncProjectNow();
+  toast('Redo');
 }
 
 let _redrawScheduled = false;
@@ -587,19 +699,30 @@ function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
   for (const entry of state.library) {
+    const isAuditioning = state.audition.path === entry.path;
+    const isPlaying = isAuditioning && !auditionAudio.paused;
     const div = document.createElement('div');
-    div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
+    div.className = 'library-item'
+      + (state.armedLibraryPath === entry.path ? ' armed' : '')
+      + (entry.error ? ' error' : '')
+      + (isAuditioning ? ' auditioning' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const camelotChip = entry.camelot
+      ? `<span class="li-chip camelot" style="background:${camelotColor(entry.camelot)}">${escapeHtml(entry.camelot)}</span>` : '';
     div.innerHTML = `
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
+        ${camelotChip}
         ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
       </div>
-      <canvas class="li-wave" width="220" height="22"></canvas>`;
+      <canvas class="li-wave" width="220" height="22"></canvas>
+      <button class="li-audition-btn${isPlaying ? ' playing' : ''}" title="試聴 (Preview)">
+        <svg viewBox="0 0 24 24">${isPlaying ? '<path d="M6 5h4v14H6zm8 0h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>'}</svg>
+      </button>`;
     listEl.appendChild(div);
 
     const waveCanvas = div.querySelector('.li-wave');
@@ -617,12 +740,247 @@ function renderLibrary() {
     div.addEventListener('click', () => {
       state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
       renderLibrary();
+      if (!document.getElementById('suggestPanel').hidden) showSuggestions();
     });
     div.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', entry.path);
       e.dataTransfer.effectAllowed = 'copy';
     });
+
+    div.querySelector('.li-audition-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleAuditionPlay(entry);
+    });
+    waveCanvas.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!entry.duration) { toggleAuditionPlay(entry); return; }
+      if (state.audition.path !== entry.path) openAudition(entry);
+      const rect = waveCanvas.getBoundingClientRect();
+      const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      auditionAudio.currentTime = frac * entry.duration;
+      auditionAudio.play().catch(() => {});
+    });
   }
+}
+
+// ---------------------------------------------------------- audition player --
+// A quick-preview player + rekordbox-style hot cues for library items,
+// independent of the full-mix Preview/Export render (which stays offline).
+
+const auditionAudio = document.getElementById('auditionAudio');
+let _auditionRedrawScheduled = false;
+
+function requestAuditionRedraw() {
+  if (_auditionRedrawScheduled) return;
+  _auditionRedrawScheduled = true;
+  requestAnimationFrame(() => { _auditionRedrawScheduled = false; drawAuditionWave(); });
+}
+
+function updateAuditionPlayIcon() {
+  const btn = document.getElementById('auditionPlay');
+  if (!btn) return;
+  btn.innerHTML = auditionAudio.paused
+    ? '<svg viewBox="0 0 24 24" class="btn-icon"><path d="M8 5v14l11-7z"/></svg>'
+    : '<svg viewBox="0 0 24 24" class="btn-icon"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
+}
+
+function openAudition(entry) {
+  if (!entry) return;
+  state.audition.path = entry.path;
+  state.audition.entry = entry;
+  document.getElementById('auditionBar').hidden = false;
+  document.getElementById('auditionName').textContent = entry.filename;
+  auditionAudio.src = `/api/library/audio?path=${encodeURIComponent(entry.path)}`;
+  auditionAudio.currentTime = 0;
+  auditionAudio.play().catch(() => {});
+  renderCuePads();
+  renderLibrary();
+  requestAuditionRedraw();
+}
+
+function closeAudition() {
+  auditionAudio.pause();
+  auditionAudio.removeAttribute('src');
+  auditionAudio.load();
+  state.audition.path = null;
+  state.audition.entry = null;
+  document.getElementById('auditionBar').hidden = true;
+  renderLibrary();
+}
+
+function toggleAuditionPlay(entry) {
+  if (state.audition.path === entry.path) {
+    if (auditionAudio.paused) auditionAudio.play().catch(() => {}); else auditionAudio.pause();
+  } else {
+    openAudition(entry);
+  }
+}
+
+function drawAuditionWave() {
+  const canvas = document.getElementById('auditionWave');
+  const entry = state.audition.entry;
+  if (!canvas) return;
+  const cssW = canvas.clientWidth || 260, h = 46;
+  const ctx = setupCanvasDPI(canvas, cssW, h);
+  ctx.clearRect(0, 0, cssW, h);
+  if (!entry) return;
+  const mid = h / 2;
+  if (entry.peaks && entry.peaks.length) {
+    ctx.fillStyle = M3.primary + 'b0';
+    const pw = Math.max(1, cssW / entry.peaks.length);
+    entry.peaks.forEach((pk, i) => {
+      const [mn, mx] = pk;
+      const x = (i / entry.peaks.length) * cssW;
+      ctx.fillRect(x, mid - mx * mid * 0.92, pw, Math.max(1, (mx - mn) * mid * 0.92));
+    });
+  }
+  const dur = entry.duration || auditionAudio.duration || 0;
+  if (dur > 0) {
+    (entry.cues || []).forEach((cue, i) => {
+      if (!cue) return;
+      const x = clamp((cue.time / dur) * cssW, 0, cssW) + 0.5;
+      ctx.strokeStyle = '#F0C05A';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      ctx.fillStyle = '#F0C05A';
+      ctx.font = '700 9px Roboto, sans-serif';
+      ctx.fillText(String(i + 1), x + 2, 9);
+    });
+    const cx = clamp((auditionAudio.currentTime / dur) * cssW, 0, cssW) + 0.5;
+    ctx.strokeStyle = M3.error;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+  }
+}
+
+function renderCuePads() {
+  const wrap = document.getElementById('cuePads');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const entry = state.audition.entry;
+  const cues = (entry && entry.cues) || [];
+  for (let i = 0; i < 4; i++) {
+    const cue = cues[i];
+    const btn = document.createElement('button');
+    btn.className = 'cue-pad' + (cue ? ' set' : '');
+    btn.textContent = cue ? `${i + 1} · ${formatTime(cue.time)}` : String(i + 1);
+    btn.title = cue ? 'Click: jump · Shift+click: clear' : 'Click: set a cue here';
+    btn.addEventListener('click', e => { if (e.shiftKey) clearCue(i); else useCue(i); });
+    wrap.appendChild(btn);
+  }
+}
+
+function useCue(i) {
+  const entry = state.audition.entry;
+  if (!entry) return;
+  const cues = entry.cues ? entry.cues.slice() : [];
+  if (cues[i]) {
+    auditionAudio.currentTime = cues[i].time;
+    auditionAudio.play().catch(() => {});
+  } else {
+    cues[i] = { time: auditionAudio.currentTime || 0, label: String(i + 1) };
+    saveCues(entry, cues);
+  }
+}
+
+function clearCue(i) {
+  const entry = state.audition.entry;
+  if (!entry || !entry.cues || !entry.cues[i]) return;
+  const cues = entry.cues.slice();
+  cues[i] = null;
+  saveCues(entry, cues);
+}
+
+async function saveCues(entry, cues) {
+  entry.cues = cues;
+  renderCuePads();
+  requestAuditionRedraw();
+  try {
+    await apiPost('/api/library/cues', { path: entry.path, cues });
+  } catch (err) {
+    toast('Cue save failed: ' + err.message, true);
+  }
+}
+
+function wireAudition() {
+  auditionAudio.addEventListener('timeupdate', () => {
+    const el = document.getElementById('auditionCur');
+    if (el) el.textContent = formatTime(auditionAudio.currentTime);
+    requestAuditionRedraw();
+  });
+  auditionAudio.addEventListener('loadedmetadata', () => {
+    const el = document.getElementById('auditionDur');
+    if (el) el.textContent = formatTime(auditionAudio.duration);
+    requestAuditionRedraw();
+  });
+  auditionAudio.addEventListener('play', () => { updateAuditionPlayIcon(); renderLibrary(); });
+  auditionAudio.addEventListener('pause', () => { updateAuditionPlayIcon(); renderLibrary(); });
+  auditionAudio.addEventListener('ended', () => { updateAuditionPlayIcon(); renderLibrary(); });
+
+  document.getElementById('auditionPlay').addEventListener('click', () => {
+    if (!state.audition.entry) return;
+    if (auditionAudio.paused) auditionAudio.play().catch(() => {}); else auditionAudio.pause();
+  });
+  document.getElementById('auditionClose').addEventListener('click', closeAudition);
+  document.getElementById('auditionWave').addEventListener('click', e => {
+    const entry = state.audition.entry;
+    const dur = entry && (entry.duration || auditionAudio.duration);
+    if (!dur) return;
+    const rect = e.target.getBoundingClientRect();
+    const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    auditionAudio.currentTime = frac * dur;
+  });
+  window.addEventListener('resize', requestAuditionRedraw);
+}
+
+// ------------------------------------------------------- AI mix assistant --
+// A small local, rule-based recommendation engine (Camelot harmonic distance
+// + BPM compatibility over the already-analyzed library) -- no cloud calls,
+// runs entirely on-device against data already sitting in the browser.
+
+function pickSuggestReference() {
+  if (state.armedLibraryPath) return state.libraryByPath.get(state.armedLibraryPath);
+  if (state.selection && state.selection.type === 'clip') return state.libraryByPath.get(state.selection.clip.source_path);
+  if (state.audition.entry) return state.audition.entry;
+  return null;
+}
+
+function showSuggestions() {
+  const ref = pickSuggestReference();
+  const panel = document.getElementById('suggestPanel');
+  if (!ref) {
+    toast('基準にする曲をアーム(クリック)するか、クリップを選択してください', true);
+    panel.hidden = true;
+    return;
+  }
+  const scored = state.library
+    .filter(e => e.path !== ref.path && !e.error)
+    .map(e => ({ entry: e, score: camelotCompat(ref.camelot, e.camelot) * 0.55 + bpmCompat(ref.bpm, e.bpm) * 0.45 }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  panel.innerHTML = `<div class="suggest-panel-title">${escapeHtml(ref.filename)} と合う曲</div>`;
+  if (!scored.length) {
+    panel.innerHTML += `<div class="suggest-empty">比較できる曲がライブラリにありません</div>`;
+  } else {
+    for (const { entry, score } of scored) {
+      const row = document.createElement('div');
+      row.className = 'suggest-item';
+      const pct = Math.round(clamp(score, 0, 1) * 100);
+      row.innerHTML = `
+        <span class="li-chip camelot" style="background:${camelotColor(entry.camelot) || 'var(--m3-surface-container-highest)'}">${escapeHtml(entry.camelot || '?')}</span>
+        <span class="suggest-name">${escapeHtml(entry.filename)}</span>
+        <span class="li-chip bpm">${entry.bpm ? entry.bpm.toFixed(1) : '--'}</span>
+        <span class="suggest-score"><i style="width:${pct}%"></i></span>`;
+      row.addEventListener('click', () => {
+        state.armedLibraryPath = entry.path;
+        renderLibrary();
+        toast('Armed: ' + entry.filename);
+      });
+      panel.appendChild(row);
+    }
+  }
+  panel.hidden = false;
 }
 
 async function scanLibrary() {
@@ -794,6 +1152,7 @@ async function doLoad(filename) {
   try {
     const project = await apiPost(`/api/projects/${encodeURIComponent(filename)}/load`, {});
     loadProjectIntoUI(project);
+    initHistory();
     toast('Loaded ' + project.name);
   } catch (err) { toast('Load failed: ' + err.message, true); }
 }
@@ -802,6 +1161,7 @@ async function doNew() {
   if (!confirm('現在のプロジェクトの未保存の変更は失われます。新規作成しますか？')) return;
   const project = await apiPost('/api/project/new', {});
   loadProjectIntoUI(project);
+  initHistory();
 }
 
 // ----------------------------------------------------------- transport --
@@ -889,11 +1249,29 @@ function wireStaticControls() {
   document.getElementById('zoomOut').addEventListener('click', () => { state.pxPerSecond = clamp(state.pxPerSecond / 1.4, 6, 400); requestRedraw(); });
   document.getElementById('snapToggle').addEventListener('change', e => { state.snap = e.target.checked; });
 
+  document.getElementById('btnUndo').addEventListener('click', undo);
+  document.getElementById('btnRedo').addEventListener('click', redo);
+  document.getElementById('btnSuggest').addEventListener('click', showSuggestions);
+  wireAudition();
+
   window.addEventListener('keydown', e => {
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+      e.preventDefault(); redo();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
     else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
+    else if (state.audition.entry && /^[1-4]$/.test(e.key)) {
+      const i = parseInt(e.key, 10) - 1;
+      if (e.shiftKey) clearCue(i); else useCue(i);
+      e.preventDefault();
+    } else if (state.audition.entry && e.code === 'Space') {
+      if (auditionAudio.paused) auditionAudio.play().catch(() => {}); else auditionAudio.pause();
+      e.preventDefault();
+    }
   });
 }
 
@@ -906,6 +1284,7 @@ async function init() {
     toast('Backend not reachable: ' + err.message, true);
     loadProjectIntoUI(emptyProjectFallback());
   }
+  initHistory();
   refreshLibraryFromCache();
   refreshProjectList();
 }
