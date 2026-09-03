@@ -40,6 +40,9 @@ class DeckAutomation(BaseModel):
     gain: Automation = Field(default_factory=list)
     filter: Automation = Field(default_factory=list)
     reverb_send: Automation = Field(default_factory=list)
+    eq_low: Automation = Field(default_factory=list)
+    eq_mid: Automation = Field(default_factory=list)
+    eq_high: Automation = Field(default_factory=list)
 
 
 class Deck(BaseModel):
@@ -50,6 +53,9 @@ class Deck(BaseModel):
     gain: float = 1.0                # base fader, used where automation has no points
     filter: float = 0.0              # -1 (low-pass, dark) .. 0 (bypass) .. 1 (high-pass, thin)
     reverb_send: float = 0.0         # 0..1 base aux send
+    eq_low: float = 1.0              # 3-band ISO kill EQ, linear multiplier: 0 = kill, 1 = flat, 2 = +6dB boost
+    eq_mid: float = 1.0
+    eq_high: float = 1.0
     bus: Literal["A", "B", "M"] = "M"   # crossfader routing; M bypasses the crossfader
     mute: bool = False
     solo: bool = False

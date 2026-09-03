@@ -54,6 +54,39 @@ def apply_dj_filter(signal: np.ndarray, filter_env: np.ndarray, sr: int) -> np.n
     return out
 
 
+EQ_LOW_CROSSOVER_HZ = 300.0
+EQ_HIGH_CROSSOVER_HZ = 3000.0
+
+
+def apply_three_band_eq(
+    signal: np.ndarray,
+    low_gain_env: np.ndarray,
+    mid_gain_env: np.ndarray,
+    high_gain_env: np.ndarray,
+    sr: int,
+) -> np.ndarray:
+    """A Pioneer-mixer-style 3-band ISO EQ: split into low/mid/high bands with
+    fixed crossovers (300Hz / 3kHz), then apply an independent, automatable,
+    linear gain per band (0 = kill, 1 = flat/unity, >1 = boost) before summing
+    back. Unlike the DJ filter's sweeping cutoff, the crossover points are
+    fixed here -- only the per-band gain is time-varying -- so this can run as
+    two whole-buffer IIR passes instead of block-by-block.
+    """
+    n_ch, n = signal.shape
+    if n == 0:
+        return signal
+    low_cut = _safe_cutoff(EQ_LOW_CROSSOVER_HZ, sr)
+    high_cut = _safe_cutoff(EQ_HIGH_CROSSOVER_HZ, sr)
+    b_lo, a_lo = butter(2, low_cut, btype="low", fs=sr)
+    b_hi, a_hi = butter(2, high_cut, btype="high", fs=sr)
+
+    low_band = lfilter(b_lo, a_lo, signal, axis=1)
+    high_band = lfilter(b_hi, a_hi, signal, axis=1)
+    mid_band = signal - low_band - high_band
+
+    return low_band * low_gain_env + mid_band * mid_gain_env + high_band * high_gain_env
+
+
 _COMB_DELAYS_MS = [25.31, 26.94, 28.96, 30.75, 32.24, 33.81, 35.31, 36.67]
 _ALLPASS_DELAYS_MS = [12.61, 10.0, 7.73, 5.10]
 

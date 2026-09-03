@@ -5,6 +5,8 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from harmonic import camelot_of
+
 ANALYSIS_SR = 22050
 PEAK_POINTS = 800
 
@@ -50,7 +52,7 @@ def analyze_file(path: str) -> dict:
 
         y, sr = librosa.load(path, sr=ANALYSIS_SR, mono=True)
         if y.size == 0:
-            return {"duration": duration, "native_sr": info.samplerate, "bpm": None, "key": "?", "peaks": []}
+            return {"duration": duration, "native_sr": info.samplerate, "bpm": None, "key": "?", "camelot": None, "peaks": []}
 
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
@@ -72,6 +74,7 @@ def analyze_file(path: str) -> dict:
             "native_sr": info.samplerate,
             "bpm": bpm,
             "key": key,
+            "camelot": camelot_of(key),
             "peaks": peaks,
         }
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI, must not crash a scan
