@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DJ Mix Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">DJ</span>
+      <span class="brand-word">Mix Studio</span>
+    </div>
+
+    <label class="m3-field compact">
+      <span class="m3-field-label">Master BPM</span>
+      <input id="masterBpm" type="number" step="0.1" min="20" max="300" value="128">
+    </label>
+
+    <div class="toolbar-dock">
+      <button id="btnPreview" class="btn tonal">
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M8 5v14l11-7z"/></svg>
+        Preview
+      </button>
+      <span id="renderStatus" class="render-status"></span>
+      <audio id="previewAudio" controls></audio>
+      <button id="btnExport" class="btn filled">
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.41 1.41L11 5.83V16h2V5.83l3.09 3.08 1.41-1.41L12 2z" transform="rotate(180 12 11)"/></svg>
+        Export WAV
+      </button>
+    </div>
+
+    <div class="project-controls">
+      <input id="projectName" type="text" class="m3-text-input" value="Untitled Mix" spellcheck="false">
+      <button id="btnSave" class="btn outlined">Save</button>
+      <select id="projectList" class="m3-select"><option value="">Load project…</option></select>
+      <button id="btnNewProject" class="btn text" title="Start a fresh project">New</button>
+    </div>
+  </header>
+
+  <div id="body">
+
+    <aside id="library">
+      <div class="panel-title">Library</div>
+      <div class="library-scan">
+        <input id="scanFolder" type="text" class="m3-text-input" placeholder="C:\Music\... フォルダを指定してScan">
+        <button id="btnScan" class="btn tonal small">Scan</button>
+      </div>
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <div id="libraryList" class="library-list"></div>
+    </aside>
+
+    <main id="timelineArea">
+      <div id="timelineToolbar">
+        <div class="segmented-group" id="addDeckGroup">
+          <button id="btnAddTrackDeck" class="btn segment">+ Track Deck</button>
+          <button id="btnAddShotDeck" class="btn segment">+ Shot Deck</button>
+        </div>
+        <div class="spacer"></div>
+        <label class="m3-switch-field">
+          <span class="m3-switch"><input type="checkbox" id="snapToggle" checked><span class="m3-switch-track"><span class="m3-switch-thumb"></span></span></span>
+          Snap to beat
+        </label>
+        <div class="zoom-controls">
+          <button id="zoomOut" class="btn icon" aria-label="Zoom out">−</button>
+          <span class="zoom-label">Zoom</span>
+          <button id="zoomIn" class="btn icon" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+
+      <div id="timelineScroll">
+        <div id="timelineInner">
+          <div class="ruler-row">
+            <div class="ruler-spacer"></div>
+            <canvas id="rulerCanvas" height="28"></canvas>
+          </div>
+          <div id="decksContainer"></div>
+          <div id="masterStrip">
+            <div class="deck-row master-row">
+              <div class="deck-header master-header">
+                <div class="deck-name">Crossfader <span class="hint">A ↔ B</span></div>
+                <input id="crossfaderValue" type="range" class="m3-slider" min="0" max="1" step="0.01" value="0.5">
+              </div>
+              <canvas class="automation-canvas" id="crossfaderCanvas" height="44"></canvas>
+            </div>
+            <div class="deck-row master-row">
+              <div class="deck-header master-header">
+                <div class="deck-name">Master</div>
+                <input id="masterGain" type="range" class="m3-slider" min="0" max="1.5" step="0.01" value="1">
+              </div>
+              <canvas class="automation-canvas" id="masterCanvas" height="44"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside id="inspector">
+      <div class="panel-title">Inspector</div>
+      <div id="inspectorContent" class="inspector-empty">クリップ・オートメーションポイント・デッキを選択すると詳細と数値入力がここに出ます。</div>
+
+      <div class="panel-title reverb-title">Reverb Bus (Send)</div>
+      <div id="reverbControls" class="knob-grid">
+        <label>Room <input id="revRoom" type="range" class="m3-slider" min="0" max="1" step="0.01" value="0.5"></label>
+        <label>Damping <input id="revDamp" type="range" class="m3-slider" min="0" max="1" step="0.01" value="0.5"></label>
+        <label>Width <input id="revWidth" type="range" class="m3-slider" min="0" max="1" step="0.01" value="1"></label>
+        <label>Pre-delay(ms) <input id="revPreDelay" type="number" min="0" max="300" step="1" value="20"></label>
+        <label>Return <input id="revReturn" type="range" class="m3-slider" min="0" max="2" step="0.01" value="1"></label>
+      </div>
+    </aside>
+
+  </div>
+
+  <div id="toast"></div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

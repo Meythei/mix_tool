@@ -1,0 +1,17 @@
+# PyInstaller build output (regenerate with build_exe.ps1)
+/build/
+/dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+
+# Runtime data (machine-specific; regenerated on first run)
+backend/data/library_cache.json
+backend/data/exports/*.wav
+backend/data/projects/*.json
+
+# OS cruft
+Thumbs.db
+.DS_Store
