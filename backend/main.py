@@ -117,6 +117,18 @@ async def api_library_scan(req: ScanRequest):
     return entries
 
 
+@app.get("/api/library/suggestions")
+async def api_library_suggestions(
+    bpm: float | None = None,
+    camelot: str | None = None,
+    exclude: str | None = None,
+    limit: int = 20,
+):
+    """AI Match: local, offline BPM/Camelot-key compatibility ranking over
+    the scanned library. No cloud call -- pure on-device heuristic scoring."""
+    return library.suggest_matches(CACHE_PATH, bpm, camelot, exclude_path=exclude, limit=limit)
+
+
 @app.post("/api/library/reanalyze")
 async def api_library_reanalyze(req: dict):
     path = req.get("path")

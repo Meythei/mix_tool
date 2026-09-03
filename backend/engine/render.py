@@ -16,7 +16,7 @@ import soundfile as sf
 
 from models import Project, Deck, Clip
 from engine.envelope import sample_envelope, times_for_range
-from engine.effects import apply_dj_filter, process_reverb
+from engine.effects import apply_dj_filter, apply_three_band_eq, process_reverb
 
 _clip_cache: dict = {}
 
@@ -223,6 +223,13 @@ def render_project(
             _add_at(deck_buf, audio, start_t - t_start, sr)
         if not np.any(deck_buf):
             continue
+
+        eq_low_env = sample_envelope(deck.automation.eq_low, deck.eq_low, t_arr)
+        eq_mid_env = sample_envelope(deck.automation.eq_mid, deck.eq_mid, t_arr)
+        eq_high_env = sample_envelope(deck.automation.eq_high, deck.eq_high, t_arr)
+        if (np.any(np.abs(eq_low_env - 1.0) > 1e-3) or np.any(np.abs(eq_mid_env - 1.0) > 1e-3)
+                or np.any(np.abs(eq_high_env - 1.0) > 1e-3)):
+            deck_buf = apply_three_band_eq(deck_buf, eq_low_env, eq_mid_env, eq_high_env, sr)
 
         filter_env = sample_envelope(deck.automation.filter, deck.filter, t_arr)
         if np.any(np.abs(filter_env) > 1e-3):

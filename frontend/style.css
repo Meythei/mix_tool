@@ -260,7 +260,16 @@ input[type=text]:focus, input[type=number]:focus {
   background: var(--m3-surface-container-highest); color: var(--m3-on-surface-variant);
 }
 .li-chip.bpm { background: var(--m3-tertiary-container); color: var(--m3-on-tertiary-container); }
+.li-chip.camelot { background: var(--m3-accent-lilac); color: #2B0A57; font-family: 'Roboto Mono', monospace; }
+.li-chip.score { font-variation-settings: 'wght' 700; }
+.li-chip.score.high { background: var(--m3-tertiary); color: var(--m3-on-tertiary); }
+.li-chip.score.mid { background: var(--m3-accent-amber); color: #3A2E00; }
+.li-chip.score.low { background: var(--m3-surface-container-highest); color: var(--m3-outline); }
 .li-wave { height: 22px; margin-top: 6px; opacity: 0.9; border-radius: var(--m3-shape-xs); overflow: hidden; }
+
+.match-toggle { width: 100%; margin-bottom: 6px; }
+.match-toggle.on { background: var(--m3-tertiary-container); color: var(--m3-on-tertiary-container); border-color: var(--m3-tertiary); }
+.match-status { font-size: 10px; color: var(--m3-on-surface-variant); margin-bottom: 8px; min-height: 14px; line-height: 1.4; }
 
 /* ================================================================ timeline */
 #timelineArea { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -327,8 +336,10 @@ input[type=text]:focus, input[type=number]:focus {
 .choke-field { font-size: 10px; color: var(--m3-on-surface-variant); font-weight: 600; display: flex; align-items: center; gap: 5px; }
 .choke-field input { width: 44px; padding: 2px 5px; font-size: 10.5px; }
 
+.eq-label { font-size: 9px; font-weight: 700; letter-spacing: .5px; color: var(--m3-outline); text-transform: uppercase; margin: 2px 0 -2px; }
 .knob-row { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--m3-on-surface-variant); font-weight: 600; }
 .knob-row > span { width: 26px; flex-shrink: 0; }
+.knob-row.eq-row > span { width: 18px; }
 .knob-row input[type=number] { width: 44px; padding: 2px 4px; font-size: 10.5px; }
 .knob-row .autobtn {
   width: 15px; height: 15px; border-radius: var(--m3-shape-full); border: 1.5px solid var(--m3-outline-variant);

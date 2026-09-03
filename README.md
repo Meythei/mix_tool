@@ -36,7 +36,8 @@ python run.py
 
 - **ライブラリ**: フォルダを指定してScanすると、配下の音源(wav/mp3/flac/aiff/ogg/m4a)を再帰的に解析してBPM・キー・波形を表示。解析結果はキャッシュされ、ファイルが変わらない限り再解析しません。
 - **デッキはAbleton的に何本でも**: 「+ Track Deck」「+ Shot Deck」で好きな数だけ追加。Track Deckは曲/ループ用(BPM同期のタイムストレッチあり)、Shot Deckは単発ネタ用(ジングル・煽りボイス・効果音など、デフォルトは原速再生)。Shot Deckには「Choke grp」があり、同じ番号同士は後発の発音が先発を止める(サンプラーのvoice steal)。
-- **打ち込みオートメーション**: 各デッキのGain(フェーダー)・Filter(LPF⇄HPFの1ノブフィルター)・Reverb Send、それにMaster GainとCrossfader(A/Bをイコールパワーでミックス)は、つまみで固定値を決めるか、レーンをクリックしてブレークポイントを打ち込むと時間変化するオートメーションになります。ポイントは右のInspectorで時間・値を数値入力でき、ドラッグでも動かせます。
+- **打ち込みオートメーション**: 各デッキのGain(フェーダー)・3-Band EQ(Low/Mid/Highの独立キルEQ)・Filter(LPF⇄HPFの1ノブフィルター)・Reverb Send、それにMaster GainとCrossfader(A/Bをイコールパワーでミックス)は、つまみで固定値を決めるか、レーンをクリックしてブレークポイントを打ち込むと時間変化するオートメーションになります。ポイントは右のInspectorで時間・値を数値入力でき、ドラッグでも動かせます。
+- **Camelotキー表記 / AI Match**: ライブラリの各曲にBPMとCamelotキー表記(例: 8A)を表示。「🎯 AI Match」をオンにすると、選択中のクリップ(または armed 中の曲)とBPM・キーの相性が良い曲をローカルだけで(ネットワーク接続なしで)ランク付けして並べ替えます。
 - **クリップ編集**: ライブラリの項目をクリックしてアーム→デッキのレーンをクリックで配置(アームしたままだと連続でスタンプ配置できます)。ドラッグで移動、右端をドラッグでソース長を調整。Inspectorでソースの開始位置・長さ・ループ回数・トリムゲイン・フェード・ピッチ(半音)・リバースを数値で追い込めます。
 - **リバーブ**: 各デッキのSendから共通のリバーブバス(Room/Damping/Width/Pre-delay/Return)に送る、実機ミキサーと同じセンド構成。
 - **Preview / Export**: PreviewはUI上部のプレイヤーで即再生確認。Export WAVでプロジェクト全体を1本のWAV(24bit/プロジェクトのサンプルレート)に書き出します。
@@ -51,7 +52,7 @@ python run.py
 
 ## 構成
 
-- `backend/` — FastAPI。`analysis.py`(BPM/キー解析), `library.py`(フォルダScan+キャッシュ), `engine/`(タイムストレッチ・フィルター・リバーブ・ミックスダウン), `models.py`(プロジェクトのスキーマ), `main.py`(API。開発版/exe版でデータ保存先を自動切り替え)。
+- `backend/` — FastAPI。`analysis.py`(BPM/キー解析), `harmonic.py`(Camelotキー表記・AI Matchスコアリング), `library.py`(フォルダScan+キャッシュ), `engine/`(タイムストレッチ・フィルター・3-Band EQ・リバーブ・ミックスダウン), `models.py`(プロジェクトのスキーマ), `main.py`(API。開発版/exe版でデータ保存先を自動切り替え)。
 - `frontend/` — 素のHTML/CSS/JS + Roboto可変フォント同梱。`style.css`がMaterial 3 Expressiveのデザイントークン、`app.js`がタイムラインCanvas・オートメーション編集・Inspectorなど全UIロジック。
 - `desktop_app.py` — exe版のエントリポイント。バックグラウンドスレッドでFastAPIサーバーを起動し、pywebviewのネイティブウィンドウで表示。
 - `build_exe.ps1` — PyInstallerでのビルドスクリプト。`frontend/app.ico`をアイコンに使用。

@@ -5,6 +5,9 @@ const state = {
   project: null,
   library: [],
   libraryByPath: new Map(),
+  libraryDisplay: [],
+  matchMode: false,
+  matchRef: null,
   armedLibraryPath: null,
   selection: null,
   pxPerSecond: 40,
@@ -87,7 +90,7 @@ function computeTimelineSeconds(project) {
   let end = 30;
   for (const deck of project.decks) {
     for (const clip of deck.clips) end = Math.max(end, clip.timeline_start + estimateClipDuration(clip, deck, project));
-    for (const param of ['gain', 'filter', 'reverb_send']) {
+    for (const param of AUTOMATABLE_PARAMS) {
       for (const p of deck.automation[param]) end = Math.max(end, p.time);
     }
   }
@@ -315,9 +318,14 @@ function wireClipCanvas(canvas, deck, refs) {
 
 // -------------------------------------------------------- automation lanes --
 
+const AUTOMATABLE_PARAMS = ['gain', 'filter', 'reverb_send', 'eq_low', 'eq_mid', 'eq_high'];
+
 function laneSpec(param, deck) {
   if (param === 'gain') return { points: deck.automation.gain, base: deck.gain, min: 0, max: 1.5, color: deck.color, ref: 1.0, label: `${deck.name} · Gain` };
   if (param === 'filter') return { points: deck.automation.filter, base: deck.filter, min: -1, max: 1, color: deck.color, ref: 0.0, label: `${deck.name} · Filter` };
+  if (param === 'eq_low') return { points: deck.automation.eq_low, base: deck.eq_low, min: 0, max: 2, color: deck.color, ref: 1.0, label: `${deck.name} · EQ Low` };
+  if (param === 'eq_mid') return { points: deck.automation.eq_mid, base: deck.eq_mid, min: 0, max: 2, color: deck.color, ref: 1.0, label: `${deck.name} · EQ Mid` };
+  if (param === 'eq_high') return { points: deck.automation.eq_high, base: deck.eq_high, min: 0, max: 2, color: deck.color, ref: 1.0, label: `${deck.name} · EQ High` };
   return { points: deck.automation.reverb_send, base: deck.reverb_send, min: 0, max: 1, color: deck.color, ref: 0.0, label: `${deck.name} · Send` };
 }
 
@@ -435,6 +443,25 @@ function deckHeaderHTML(deck) {
     <input type="number" min="-1" max="1" step="0.01" data-field="filter" value="${deck.filter}">
     <button class="autobtn ${deck.automation.filter.length ? 'has-points' : ''}" data-toggle="filter" title="Show automation lane · right-click clears it"></button>
   </div>
+  <div class="eq-label">3-Band EQ</div>
+  <div class="knob-row eq-row" data-param="eq_low">
+    <span>Lo</span>
+    <input type="range" min="0" max="2" step="0.01" data-field="eq_low" value="${deck.eq_low}">
+    <input type="number" min="0" max="2" step="0.01" data-field="eq_low" value="${deck.eq_low}">
+    <button class="autobtn ${deck.automation.eq_low.length ? 'has-points' : ''}" data-toggle="eq_low" title="3-band ISO kill EQ · show automation lane · right-click clears it"></button>
+  </div>
+  <div class="knob-row eq-row" data-param="eq_mid">
+    <span>Mid</span>
+    <input type="range" min="0" max="2" step="0.01" data-field="eq_mid" value="${deck.eq_mid}">
+    <input type="number" min="0" max="2" step="0.01" data-field="eq_mid" value="${deck.eq_mid}">
+    <button class="autobtn ${deck.automation.eq_mid.length ? 'has-points' : ''}" data-toggle="eq_mid" title="3-band ISO kill EQ · show automation lane · right-click clears it"></button>
+  </div>
+  <div class="knob-row eq-row" data-param="eq_high">
+    <span>Hi</span>
+    <input type="range" min="0" max="2" step="0.01" data-field="eq_high" value="${deck.eq_high}">
+    <input type="number" min="0" max="2" step="0.01" data-field="eq_high" value="${deck.eq_high}">
+    <button class="autobtn ${deck.automation.eq_high.length ? 'has-points' : ''}" data-toggle="eq_high" title="3-band ISO kill EQ · show automation lane · right-click clears it"></button>
+  </div>
   <div class="knob-row" data-param="reverb_send">
     <span>Send</span>
     <input type="range" min="0" max="1" step="0.01" data-field="reverb_send" value="${deck.reverb_send}">
@@ -516,7 +543,7 @@ function rebuildDeckDOM() {
     state.deckCanvases[deck.id] = refs;
 
     const expanded = state.expandedAutomation[deck.id] || new Set();
-    for (const param of ['gain', 'filter', 'reverb_send']) {
+    for (const param of AUTOMATABLE_PARAMS) {
       if (!expanded.has(param)) continue;
       const c = document.createElement('canvas');
       c.className = 'automation-canvas';
@@ -541,8 +568,9 @@ function addDeck(type) {
   const deck = {
     id: uid(), name: type === 'shot' ? `Shots ${n}` : `Deck ${n}`, type,
     sync: type === 'track', gain: 1, filter: 0, reverb_send: 0, bus: 'M',
+    eq_low: 1, eq_mid: 1, eq_high: 1,
     mute: false, solo: false, choke_group: type === 'shot' ? 1 : null, color,
-    automation: { gain: [], filter: [], reverb_send: [] }, clips: [],
+    automation: { gain: [], filter: [], reverb_send: [], eq_low: [], eq_mid: [], eq_high: [] }, clips: [],
   };
   state.project.decks.push(deck);
   state.expandedAutomation[deck.id] = new Set(type === 'track' ? ['gain'] : []);
@@ -583,20 +611,77 @@ function redrawAll() {
 
 // -------------------------------------------------------------- library --
 
+function scoreTier(score) {
+  if (score >= 80) return 'high';
+  if (score >= 50) return 'mid';
+  return 'low';
+}
+
+function matchReferenceFromSelection() {
+  if (state.selection && state.selection.type === 'clip') {
+    const c = state.selection.clip;
+    const entry = state.libraryByPath.get(c.source_path);
+    return { path: c.source_path, label: c.label || basename(c.source_path), bpm: c.source_bpm || (entry && entry.bpm) || null, camelot: entry && entry.camelot || null };
+  }
+  if (state.armedLibraryPath) {
+    const entry = state.libraryByPath.get(state.armedLibraryPath);
+    if (entry) return { path: entry.path, label: entry.filename, bpm: entry.bpm || null, camelot: entry.camelot || null };
+  }
+  return null;
+}
+
+async function refreshMatchSuggestions() {
+  const ref = matchReferenceFromSelection();
+  state.matchRef = ref;
+  if (!ref) { renderMatchStatus(); return; }
+  try {
+    const qs = new URLSearchParams();
+    if (ref.bpm) qs.set('bpm', ref.bpm);
+    if (ref.camelot) qs.set('camelot', ref.camelot);
+    qs.set('exclude', ref.path);
+    qs.set('limit', '200');
+    state.libraryDisplay = await apiGet(`/api/library/suggestions?${qs.toString()}`);
+  } catch (err) {
+    toast('AI Match failed: ' + err.message, true);
+    state.libraryDisplay = state.library;
+  }
+  renderMatchStatus();
+  renderLibrary();
+}
+
+function renderMatchStatus() {
+  const el = document.getElementById('matchStatus');
+  if (!el) return;
+  if (!state.matchMode) { el.textContent = ''; return; }
+  const ref = state.matchRef;
+  el.textContent = ref ? `🎯 Matching against: ${ref.label}${ref.camelot ? ' · ' + ref.camelot : ''}${ref.bpm ? ' · ' + ref.bpm.toFixed(1) + ' BPM' : ''}` : 'クリップかライブラリの曲を選択してください';
+}
+
+function toggleMatchMode() {
+  state.matchMode = !state.matchMode;
+  document.getElementById('btnMatchMode').classList.toggle('on', state.matchMode);
+  if (state.matchMode) refreshMatchSuggestions();
+  else { state.libraryDisplay = state.library; renderMatchStatus(); renderLibrary(); }
+}
+
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
-  for (const entry of state.library) {
+  const source = state.matchMode ? state.libraryDisplay : state.library;
+  for (const entry of source) {
     const div = document.createElement('div');
     div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const scoreChip = state.matchMode && entry.score != null
+      ? `<span class="li-chip score ${scoreTier(entry.score)}" title="AI Match: BPM/key compatibility with the selected clip">🎯 ${Math.round(entry.score)}%</span>` : '';
     div.innerHTML = `
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
+        ${scoreChip}
         <span class="li-chip bpm">${bpmText} BPM</span>
-        ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
+        ${entry.camelot ? `<span class="li-chip camelot" title="${escapeAttr(entry.key || '')} · Camelot">${escapeHtml(entry.camelot)}</span>` : (entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : '')}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
       </div>
       <canvas class="li-wave" width="220" height="22"></canvas>`;
@@ -616,6 +701,7 @@ function renderLibrary() {
     }
     div.addEventListener('click', () => {
       state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
+      if (state.matchMode && (!state.selection || state.selection.type !== 'clip')) refreshMatchSuggestions();
       renderLibrary();
     });
     div.addEventListener('dragstart', e => {
@@ -634,6 +720,7 @@ async function scanLibrary() {
     const entries = await apiPost('/api/library/scan', { folder });
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
+    if (!state.matchMode) state.libraryDisplay = entries;
     renderLibrary();
     toast(`Library: ${entries.length} files`);
   } catch (err) {
@@ -648,6 +735,7 @@ async function refreshLibraryFromCache(retry = 0) {
     const entries = await apiGet('/api/library');
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
+    if (!state.matchMode) state.libraryDisplay = entries;
     renderLibrary();
     if (entries.length === 0 && retry < 8) setTimeout(() => refreshLibraryFromCache(retry + 1), 4000);
   } catch { /* backend still warming up */ }
@@ -658,6 +746,10 @@ async function refreshLibraryFromCache(retry = 0) {
 function renderInspector() {
   const el = document.getElementById('inspectorContent');
   const sel = state.selection;
+  if (state.matchMode) {
+    const ref = matchReferenceFromSelection();
+    if ((ref && ref.path) !== (state.matchRef && state.matchRef.path)) refreshMatchSuggestions();
+  }
   if (!sel) {
     el.innerHTML = `<div class="inspector-empty">クリップ・オートメーションポイント・デッキを選択すると詳細と数値入力がここに出ます。</div>`;
     return;
@@ -878,6 +970,7 @@ function wireStaticControls() {
   });
 
   document.getElementById('btnScan').addEventListener('click', scanLibrary);
+  document.getElementById('btnMatchMode').addEventListener('click', toggleMatchMode);
   document.getElementById('btnPreview').addEventListener('click', doPreview);
   document.getElementById('btnExport').addEventListener('click', doExport);
   document.getElementById('btnSave').addEventListener('click', doSave);

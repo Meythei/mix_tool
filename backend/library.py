@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from analysis import analyze_file
+from harmonic import match_score
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif", ".ogg", ".m4a"}
 _lock = threading.Lock()
@@ -82,6 +83,26 @@ def invalidate(path: str, cache_path: Path) -> None:
         if path in cache:
             del cache[path]
             _save_cache(cache_path, cache)
+
+
+def suggest_matches(
+    cache_path: Path,
+    ref_bpm: float | None,
+    ref_camelot: str | None,
+    exclude_path: str | None = None,
+    limit: int = 20,
+) -> list:
+    """Local ("AI Match") recommendation: rank library entries by BPM/key
+    compatibility with a reference track, without any network call."""
+    entries = get_library(cache_path)
+    scored = []
+    for e in entries:
+        if e.get("error") or e["path"] == exclude_path:
+            continue
+        score = match_score(ref_bpm, ref_camelot, e.get("bpm"), e.get("camelot"))
+        scored.append({**e, "score": score})
+    scored.sort(key=lambda e: e["score"], reverse=True)
+    return scored[: max(0, limit)]
 
 
 def get_or_analyze(path: str, cache_path: Path) -> dict:
