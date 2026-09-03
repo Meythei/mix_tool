@@ -13,6 +13,9 @@ const state = {
   expandedAutomation: {},
   timelineWidthPx: 800,
   deckCanvases: {},
+  librarySearch: '',
+  librarySort: 'name',
+  compatOnly: false,
 };
 
 // ---------------------------------------------------------------- utils --
@@ -28,6 +31,31 @@ function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+// ------------------------------------------------------- harmonic mixing --
+// Camelot wheel compatibility: identical code, relative major/minor (same
+// number, other letter), or +-1 on the same letter (adjacent on the wheel).
+function camelotCompatible(a, b) {
+  if (!a || !b || a === '?' || b === '?') return false;
+  const ma = /^(\d+)([AB])$/i.exec(a), mb = /^(\d+)([AB])$/i.exec(b);
+  if (!ma || !mb) return false;
+  const na = parseInt(ma[1], 10), la = ma[2].toUpperCase();
+  const nb = parseInt(mb[1], 10), lb = mb[2].toUpperCase();
+  if (na === nb) return true;
+  const diff = Math.min(((na - nb) % 12 + 12) % 12, ((nb - na) % 12 + 12) % 12);
+  return diff === 1 && la === lb;
+}
+
+// 0..1 closeness score for two BPMs, tolerant of half/double-time relatives.
+function bpmScore(a, b, tolerance = 0.08) {
+  if (!a || !b) return 0;
+  let best = 0;
+  for (const mul of [1, 2, 0.5]) {
+    const ratio = (a * mul) / b;
+    best = Math.max(best, Math.max(0, 1 - Math.abs(ratio - 1) / tolerance));
+  }
+  return best;
 }
 
 let _toastTimer = null;
@@ -583,12 +611,41 @@ function redrawAll() {
 
 // -------------------------------------------------------------- library --
 
+// The track currently "in focus" for compatibility filtering / suggestions:
+// the source of the selected clip, else the armed library item.
+function getReferenceEntry() {
+  if (state.selection && state.selection.type === 'clip') {
+    const entry = state.libraryByPath.get(state.selection.clip.source_path);
+    if (entry) return entry;
+  }
+  if (state.armedLibraryPath) return state.libraryByPath.get(state.armedLibraryPath) || null;
+  return null;
+}
+
+function visibleLibraryEntries() {
+  const q = state.librarySearch.trim().toLowerCase();
+  const ref = getReferenceEntry();
+  let entries = state.library.filter(e => !q || e.filename.toLowerCase().includes(q));
+  if (state.compatOnly && ref) {
+    entries = entries.filter(e => e.path === ref.path
+      || (camelotCompatible(e.camelot, ref.camelot) && bpmScore(e.bpm, ref.bpm) > 0));
+  }
+  const sorted = entries.slice();
+  if (state.librarySort === 'bpm') sorted.sort((a, b) => (a.bpm || 0) - (b.bpm || 0));
+  else if (state.librarySort === 'key') sorted.sort((a, b) => (a.camelot || 'zz').localeCompare(b.camelot || 'zz'));
+  else sorted.sort((a, b) => a.filename.toLowerCase().localeCompare(b.filename.toLowerCase()));
+  return sorted;
+}
+
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
-  for (const entry of state.library) {
+  const ref = getReferenceEntry();
+  const entries = visibleLibraryEntries();
+  for (const entry of entries) {
+    const compatible = ref && ref.path !== entry.path && camelotCompatible(entry.camelot, ref.camelot) && bpmScore(entry.bpm, ref.bpm) > 0;
     const div = document.createElement('div');
-    div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
+    div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '') + (compatible ? ' compatible' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
@@ -596,6 +653,7 @@ function renderLibrary() {
       <div class="li-name">${escapeHtml(entry.filename)}</div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
+        ${entry.camelot && entry.camelot !== '?' ? `<span class="li-chip camelot">${escapeHtml(entry.camelot)}</span>` : ''}
         ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
       </div>
@@ -617,12 +675,65 @@ function renderLibrary() {
     div.addEventListener('click', () => {
       state.armedLibraryPath = (state.armedLibraryPath === entry.path) ? null : entry.path;
       renderLibrary();
+      renderMixAssistant();
     });
     div.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', entry.path);
       e.dataTransfer.effectAllowed = 'copy';
     });
   }
+}
+
+// ------------------------------------------------------- mix assistant --
+// Heuristic "next track" ranking: weighted Camelot harmonic-compatibility +
+// BPM closeness against the current reference track (selected clip's source,
+// or the armed library item). Pure local scoring, no network/model calls --
+// a drop-in slot for a future on-device model (Gemini Nano-class or similar).
+function rankSuggestions(ref, limit = 6) {
+  return state.library
+    .filter(e => !e.error && e.path !== ref.path)
+    .map(e => {
+      const keyScore = camelotCompatible(e.camelot, ref.camelot) ? (e.camelot === ref.camelot ? 1 : 0.85) : 0.15;
+      const tempoScore = bpmScore(e.bpm, ref.bpm);
+      const score = keyScore * 0.6 + tempoScore * 0.4;
+      return { entry: e, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+function renderMixAssistant() {
+  const el = document.getElementById('mixAssistant');
+  if (!el) return;
+  const ref = getReferenceEntry();
+  if (!ref || !state.library.length) {
+    el.innerHTML = `<div class="assistant-empty">クリップを選択するか、ライブラリで1曲アームすると、キー(Camelot)・BPMが近い次の1曲を提案します。</div>`;
+    return;
+  }
+  const ranked = rankSuggestions(ref).filter(r => r.score > 0.05);
+  if (!ranked.length) {
+    el.innerHTML = `<div class="assistant-empty">互換候補が見つかりません(ライブラリをScanしてください)。</div>`;
+    return;
+  }
+  el.innerHTML = ranked.map(({ entry, score }) => {
+    const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
+    const keyBadge = entry.camelot && entry.camelot !== '?' ? entry.camelot : '?';
+    return `<div class="assistant-item" data-path="${escapeAttr(entry.path)}">
+      <span class="assistant-score">${Math.round(score * 100)}</span>
+      <div class="assistant-info">
+        <div class="assistant-name">${escapeHtml(entry.filename)}</div>
+        <div class="assistant-meta">${bpmText} BPM · ${escapeHtml(keyBadge)}</div>
+      </div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.assistant-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const path = item.dataset.path;
+      state.armedLibraryPath = (state.armedLibraryPath === path) ? null : path;
+      renderLibrary();
+      renderMixAssistant();
+    });
+  });
 }
 
 async function scanLibrary() {
@@ -635,6 +746,7 @@ async function scanLibrary() {
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
     renderLibrary();
+    renderMixAssistant();
     toast(`Library: ${entries.length} files`);
   } catch (err) {
     toast('Scan failed: ' + err.message, true);
@@ -649,6 +761,7 @@ async function refreshLibraryFromCache(retry = 0) {
     state.library = entries;
     state.libraryByPath = new Map(entries.map(e => [e.path, e]));
     renderLibrary();
+    renderMixAssistant();
     if (entries.length === 0 && retry < 8) setTimeout(() => refreshLibraryFromCache(retry + 1), 4000);
   } catch { /* backend still warming up */ }
 }
@@ -656,6 +769,7 @@ async function refreshLibraryFromCache(retry = 0) {
 // ------------------------------------------------------------ inspector --
 
 function renderInspector() {
+  renderMixAssistant();
   const el = document.getElementById('inspectorContent');
   const sel = state.selection;
   if (!sel) {
@@ -876,6 +990,10 @@ function wireStaticControls() {
     document.getElementById(id).addEventListener('input', reverbSync);
     document.getElementById(id).addEventListener('change', scheduleSync);
   });
+
+  document.getElementById('librarySearch').addEventListener('input', e => { state.librarySearch = e.target.value; renderLibrary(); });
+  document.getElementById('librarySort').addEventListener('change', e => { state.librarySort = e.target.value; renderLibrary(); });
+  document.getElementById('compatOnlyToggle').addEventListener('change', e => { state.compatOnly = e.target.checked; renderLibrary(); });
 
   document.getElementById('btnScan').addEventListener('click', scanLibrary);
   document.getElementById('btnPreview').addEventListener('click', doPreview);

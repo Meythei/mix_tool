@@ -50,6 +50,18 @@
         <button id="btnScan" class="btn tonal small">Scan</button>
       </div>
       <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <div class="library-toolbar">
+        <input id="librarySearch" type="text" class="m3-text-input" placeholder="Search…">
+        <select id="librarySort" class="m3-select" title="Sort library">
+          <option value="name">Name</option>
+          <option value="bpm">BPM</option>
+          <option value="key">Key (Camelot)</option>
+        </select>
+      </div>
+      <label class="m3-switch-field compat-toggle" title="Selected clip / armed trackとハーモニック互換 + BPM近似のものだけ表示">
+        <span class="m3-switch"><input type="checkbox" id="compatOnlyToggle"><span class="m3-switch-track"><span class="m3-switch-thumb"></span></span></span>
+        Compatible only
+      </label>
       <div id="libraryList" class="library-list"></div>
     </aside>
 
@@ -110,6 +122,9 @@
         <label>Pre-delay(ms) <input id="revPreDelay" type="number" min="0" max="300" step="1" value="20"></label>
         <label>Return <input id="revReturn" type="range" class="m3-slider" min="0" max="2" step="0.01" value="1"></label>
       </div>
+
+      <div class="panel-title assistant-title">Mix Assistant <span class="hint">heuristic · offline</span></div>
+      <div id="mixAssistant" class="assistant-list"></div>
     </aside>
 
   </div>

@@ -34,7 +34,8 @@ python run.py
 
 ## できること
 
-- **ライブラリ**: フォルダを指定してScanすると、配下の音源(wav/mp3/flac/aiff/ogg/m4a)を再帰的に解析してBPM・キー・波形を表示。解析結果はキャッシュされ、ファイルが変わらない限り再解析しません。
+- **ライブラリ**: フォルダを指定してScanすると、配下の音源(wav/mp3/flac/aiff/ogg/m4a)を再帰的に解析してBPM・キー(Camelotコード付き)・波形を表示。解析結果はキャッシュされ、ファイルが変わらない限り再解析しません。検索ボックス・Name/BPM/Key並べ替え・「Compatible only」フィルタでrekordbox風にブラウズできます。
+- **Mix Assistant**: 選択中のクリップ(または armed 中のライブラリ項目)を基準に、Camelotキー互換性とBPM近似度から次に繋ぐトラックをローカルでランキング表示(Inspector下部)。ネットワークやMLモデルは使わないヒューリスティック方式。
 - **デッキはAbleton的に何本でも**: 「+ Track Deck」「+ Shot Deck」で好きな数だけ追加。Track Deckは曲/ループ用(BPM同期のタイムストレッチあり)、Shot Deckは単発ネタ用(ジングル・煽りボイス・効果音など、デフォルトは原速再生)。Shot Deckには「Choke grp」があり、同じ番号同士は後発の発音が先発を止める(サンプラーのvoice steal)。
 - **打ち込みオートメーション**: 各デッキのGain(フェーダー)・Filter(LPF⇄HPFの1ノブフィルター)・Reverb Send、それにMaster GainとCrossfader(A/Bをイコールパワーでミックス)は、つまみで固定値を決めるか、レーンをクリックしてブレークポイントを打ち込むと時間変化するオートメーションになります。ポイントは右のInspectorで時間・値を数値入力でき、ドラッグでも動かせます。
 - **クリップ編集**: ライブラリの項目をクリックしてアーム→デッキのレーンをクリックで配置(アームしたままだと連続でスタンプ配置できます)。ドラッグで移動、右端をドラッグでソース長を調整。Inspectorでソースの開始位置・長さ・ループ回数・トリムゲイン・フェード・ピッチ(半音)・リバースを数値で追い込めます。
@@ -58,3 +59,4 @@ python run.py
 - `scripts/generate_demo_library.py` — デモ用の合成音源(ビート/ベースライン/パッド/一発ネタ)を`backend/data/sample_library/`に生成。
 - `scripts/generate_icon.py` — `frontend/app.ico`を生成。
 - `scripts/smoke_test.py` — UIを介さずに解析→レンダリングまでを一気通貫でテストする動作確認スクリプト。
+- `CHANGELOG.md` — パッチノート。
