@@ -84,6 +84,31 @@ def invalidate(path: str, cache_path: Path) -> None:
             _save_cache(cache_path, cache)
 
 
+def _meta_path(cache_path: Path) -> Path:
+    return cache_path.parent / "library_meta.json"
+
+
+def get_meta(cache_path: Path) -> dict:
+    """User-authored library metadata (hot cues, crates) -- stored apart from
+    the analysis cache so re-scanning/re-analyzing a file never wipes it."""
+    mp = _meta_path(cache_path)
+    if mp.exists():
+        try:
+            data = json.loads(mp.read_text(encoding="utf-8"))
+            data.setdefault("tracks", {})
+            data.setdefault("crates", [])
+            return data
+        except Exception:
+            pass
+    return {"tracks": {}, "crates": []}
+
+
+def save_meta(meta: dict, cache_path: Path) -> None:
+    mp = _meta_path(cache_path)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def get_or_analyze(path: str, cache_path: Path) -> dict:
     with _lock:
         cache = _load_cache(cache_path)

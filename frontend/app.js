@@ -18,6 +18,8 @@ const state = {
   clipboard: null,        // { clip, deckId } -- see copySelectedClip()
   librarySearch: '',
   librarySort: 'name',
+  libraryMeta: { tracks: {}, crates: [] },   // hot cues + crates, synced via /api/library/meta
+  activeCrateId: null,
 };
 
 // ---------------------------------------------------------------- utils --
@@ -70,6 +72,20 @@ function scheduleSync() {
   pushHistorySnapshot();
   if (_syncTimer) clearTimeout(_syncTimer);
   _syncTimer = setTimeout(() => { apiPut('/api/project', state.project).catch(err => console.warn('sync failed', err)); }, 500);
+}
+
+// Library metadata (hot cues + crates) is a separate document from the
+// project, synced the same whole-document way but on its own debounce so
+// arming a track to preview it doesn't get entangled with project undo/redo.
+let _metaSyncTimer = null;
+function scheduleLibraryMetaSync() {
+  if (_metaSyncTimer) clearTimeout(_metaSyncTimer);
+  _metaSyncTimer = setTimeout(() => {
+    for (const [path, meta] of Object.entries(state.libraryMeta.tracks)) {
+      if (!meta.cues || !meta.cues.length) delete state.libraryMeta.tracks[path];
+    }
+    apiPut('/api/library/meta', state.libraryMeta).catch(err => console.warn('library meta sync failed', err));
+  }, 500);
 }
 
 // ------------------------------------------------------------- undo/redo --
@@ -758,11 +774,98 @@ function getReferenceEntry() {
   return null;
 }
 
+// --------------------------------------------------------------- crates --
+// rekordbox-style crates: named groups of library paths. Kept in
+// libraryMeta alongside hot cues (see below), synced as one document.
+
+function renderCrateBar() {
+  const wrap = document.getElementById('crateBar');
+  wrap.innerHTML = '';
+
+  const allChip = document.createElement('button');
+  allChip.className = 'crate-chip' + (state.activeCrateId ? '' : ' on');
+  allChip.textContent = 'All';
+  allChip.addEventListener('click', () => { state.activeCrateId = null; renderCrateBar(); renderLibrary(); });
+  wrap.appendChild(allChip);
+
+  for (const crate of state.libraryMeta.crates) {
+    const chip = document.createElement('button');
+    chip.className = 'crate-chip' + (state.activeCrateId === crate.id ? ' on' : '');
+    chip.textContent = `${crate.name} (${crate.paths.length})`;
+    chip.title = '右クリックで削除 (曲自体は削除されません)';
+    chip.addEventListener('click', () => { state.activeCrateId = crate.id; renderCrateBar(); renderLibrary(); });
+    chip.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (!confirm(`Crate "${crate.name}" を削除しますか？`)) return;
+      state.libraryMeta.crates = state.libraryMeta.crates.filter(c => c !== crate);
+      if (state.activeCrateId === crate.id) state.activeCrateId = null;
+      renderCrateBar(); renderLibrary(); scheduleLibraryMetaSync();
+    });
+    wrap.appendChild(chip);
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'crate-chip add';
+  addBtn.textContent = '+ New';
+  addBtn.addEventListener('click', () => {
+    const name = (prompt('New crate name:') || '').trim();
+    if (!name) return;
+    const crate = { id: uid(), name, paths: [] };
+    state.libraryMeta.crates.push(crate);
+    state.activeCrateId = crate.id;
+    renderCrateBar(); renderLibrary(); scheduleLibraryMetaSync();
+  });
+  wrap.appendChild(addBtn);
+}
+
+let _openCratePopoverPath = null;
+function toggleCratePopover(entry, anchorEl) {
+  document.querySelectorAll('.crate-popover').forEach(el => el.remove());
+  if (_openCratePopoverPath === entry.path) { _openCratePopoverPath = null; return; }
+  _openCratePopoverPath = entry.path;
+
+  const pop = document.createElement('div');
+  pop.className = 'crate-popover';
+  if (!state.libraryMeta.crates.length) {
+    pop.innerHTML = `<div class="crate-popover-empty">Crateがありません。上の「+ New」で作成してください。</div>`;
+  } else {
+    pop.innerHTML = state.libraryMeta.crates.map(c => `
+      <label class="crate-popover-row">
+        <input type="checkbox" data-crate="${c.id}" ${c.paths.includes(entry.path) ? 'checked' : ''}>
+        ${escapeHtml(c.name)}
+      </label>`).join('');
+  }
+  anchorEl.closest('.library-item').appendChild(pop);
+
+  pop.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const crate = state.libraryMeta.crates.find(c => c.id === cb.dataset.crate);
+      if (!crate) return;
+      if (cb.checked) { if (!crate.paths.includes(entry.path)) crate.paths.push(entry.path); }
+      else crate.paths = crate.paths.filter(p => p !== entry.path);
+      scheduleLibraryMetaSync();
+      renderCrateBar();
+      if (state.activeCrateId) renderLibrary();
+    });
+  });
+
+  setTimeout(() => {
+    document.addEventListener('click', function onDocClick(e) {
+      if (pop.isConnected && !pop.contains(e.target) && e.target !== anchorEl) {
+        pop.remove();
+        if (_openCratePopoverPath === entry.path) _openCratePopoverPath = null;
+      }
+      document.removeEventListener('click', onDocClick);
+    }, { once: true });
+  }, 0);
+}
+
 // -------------------------------------------------------------- library --
 
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
+  _openCratePopoverPath = null;
 
   const ref = getReferenceEntry();
   const refCamelot = ref ? keyToCamelot(ref.key) : null;
@@ -772,6 +875,12 @@ function renderLibrary() {
     if (!q) return true;
     return (e.filename || '').toLowerCase().includes(q) || (e.key || '').toLowerCase().includes(q);
   });
+
+  if (state.activeCrateId) {
+    const crate = state.libraryMeta.crates.find(c => c.id === state.activeCrateId);
+    const pathSet = new Set(crate ? crate.paths : []);
+    entries = entries.filter(e => pathSet.has(e.path));
+  }
 
   const compatRank = { perfect: 0, good: 1, none: 2 };
   const sort = state.librarySort;
@@ -800,7 +909,10 @@ function renderLibrary() {
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
     div.innerHTML = `
-      <div class="li-name">${escapeHtml(entry.filename)}</div>
+      <div class="li-name-row">
+        <div class="li-name">${escapeHtml(entry.filename)}</div>
+        <button class="li-crate-btn" title="Add/remove crate">🗂</button>
+      </div>
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
         ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
@@ -832,7 +944,13 @@ function renderLibrary() {
       e.dataTransfer.setData('text/plain', entry.path);
       e.dataTransfer.effectAllowed = 'copy';
     });
+    div.querySelector('.li-crate-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleCratePopover(entry, e.currentTarget);
+    });
   }
+
+  updatePreviewDeckVisibility();
 }
 
 async function scanLibrary() {
@@ -861,6 +979,148 @@ async function refreshLibraryFromCache(retry = 0) {
     renderLibrary();
     if (entries.length === 0 && retry < 8) setTimeout(() => refreshLibraryFromCache(retry + 1), 4000);
   } catch { /* backend still warming up */ }
+}
+
+// ------------------------------------------------------ library pre-listen --
+// rekordbox-style "browser preview deck": plays the raw source file directly
+// (via /api/library/audio, unrelated to the offline mix render engine) so a
+// track can be auditioned and hot-cued before it's ever dropped on a deck.
+// Cues persist per source path in state.libraryMeta, independent of any one
+// project.
+
+function currentPreviewMeta() {
+  const path = state.armedLibraryPath;
+  if (!path) return null;
+  if (!state.libraryMeta.tracks[path]) state.libraryMeta.tracks[path] = { cues: [] };
+  return state.libraryMeta.tracks[path];
+}
+
+function cueAt(meta, index) { return meta.cues.find(c => c.index === index) || null; }
+
+function updatePreviewDeckVisibility() {
+  const panel = document.getElementById('libraryPreview');
+  const path = state.armedLibraryPath;
+  panel.classList.toggle('hidden', !path);
+  if (!path) return;
+  const audio = document.getElementById('libraryPreviewAudio');
+  if (audio.dataset.path !== path) {
+    audio.pause();
+    audio.src = '/api/library/audio?path=' + encodeURIComponent(path);
+    audio.dataset.path = path;
+    document.getElementById('lpTime').textContent = '0:00.0 / 0:00.0';
+  }
+  const entry = state.libraryByPath.get(path);
+  document.getElementById('lpTrackName').textContent = entry ? entry.filename : basename(path);
+  renderCuePads();
+  drawPreviewWave();
+}
+
+function drawPreviewWave() {
+  const canvas = document.getElementById('lpWaveCanvas');
+  const path = state.armedLibraryPath;
+  if (!path) return;
+  const entry = state.libraryByPath.get(path);
+  const w = canvas.clientWidth || 220, h = 40;
+  const ctx = setupCanvasDPI(canvas, w, h);
+  ctx.clearRect(0, 0, w, h);
+  if (!entry || !entry.peaks || !entry.peaks.length || !entry.duration) return;
+
+  const mid = h / 2;
+  ctx.fillStyle = M3.primary + '99';
+  const pw = Math.max(1, w / entry.peaks.length);
+  entry.peaks.forEach((pk, i) => {
+    const [mn, mx] = pk;
+    const x = (i / entry.peaks.length) * w;
+    ctx.fillRect(x, mid - mx * mid, pw, Math.max(1, (mx - mn) * mid));
+  });
+
+  const meta = currentPreviewMeta();
+  for (const cue of meta.cues) {
+    const x = clamp((cue.time / entry.duration) * w, 0, w - 1);
+    ctx.strokeStyle = '#F0C05A';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillStyle = '#F0C05A';
+    ctx.font = '700 9px Roboto, sans-serif';
+    ctx.fillText(String(cue.index), x + 2, 9);
+  }
+
+  const audio = document.getElementById('libraryPreviewAudio');
+  if (audio.duration) {
+    const px = (audio.currentTime / audio.duration) * w;
+    ctx.strokeStyle = M3.error;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+  }
+}
+
+function renderCuePads() {
+  const wrap = document.getElementById('lpCues');
+  wrap.innerHTML = '';
+  const meta = currentPreviewMeta();
+  if (!meta) return;
+  for (let i = 1; i <= 8; i++) {
+    const cue = cueAt(meta, i);
+    const btn = document.createElement('button');
+    btn.className = 'cue-pad' + (cue ? ' set' : '');
+    btn.textContent = String(i);
+    btn.title = cue ? `Jump to ${formatTime(cue.time)}（右クリックで削除）` : 'Set hot cue at current position';
+    btn.addEventListener('click', () => triggerCue(i));
+    btn.addEventListener('contextmenu', e => { e.preventDefault(); clearCue(i); });
+    wrap.appendChild(btn);
+  }
+}
+
+function triggerCue(index) {
+  const meta = currentPreviewMeta();
+  if (!meta) return;
+  const audio = document.getElementById('libraryPreviewAudio');
+  const cue = cueAt(meta, index);
+  if (cue) {
+    audio.currentTime = cue.time;
+    audio.play().catch(() => {});
+  } else {
+    if (!audio.src || !isFinite(audio.duration)) { toast('トラック読み込み待ち…', true); return; }
+    meta.cues.push({ index, time: audio.currentTime, label: '' });
+    renderCuePads(); drawPreviewWave(); scheduleLibraryMetaSync();
+  }
+}
+
+function clearCue(index) {
+  const meta = currentPreviewMeta();
+  if (!meta) return;
+  const idx = meta.cues.findIndex(c => c.index === index);
+  if (idx < 0) return;
+  meta.cues.splice(idx, 1);
+  renderCuePads(); drawPreviewWave(); scheduleLibraryMetaSync();
+}
+
+function togglePreviewPlayback() {
+  const audio = document.getElementById('libraryPreviewAudio');
+  if (!audio.src) return;
+  if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+}
+
+function wireLibraryPreview() {
+  const audio = document.getElementById('libraryPreviewAudio');
+  const canvas = document.getElementById('lpWaveCanvas');
+  const playBtn = document.getElementById('lpPlay');
+
+  playBtn.addEventListener('click', togglePreviewPlayback);
+  audio.addEventListener('play', () => { playBtn.textContent = '⏸'; });
+  audio.addEventListener('pause', () => { playBtn.textContent = '▶'; });
+  audio.addEventListener('ended', () => { playBtn.textContent = '▶'; });
+  audio.addEventListener('timeupdate', () => {
+    document.getElementById('lpTime').textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration || 0)}`;
+    drawPreviewWave();
+  });
+  audio.addEventListener('loadedmetadata', () => drawPreviewWave());
+  canvas.addEventListener('click', e => {
+    if (!audio.src || !isFinite(audio.duration)) return;
+    const rect = canvas.getBoundingClientRect();
+    const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    audio.currentTime = frac * audio.duration;
+  });
 }
 
 // ------------------------------------------------------------ inspector --
@@ -1178,11 +1438,13 @@ function wireStaticControls() {
     else if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
     else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
     else if (e.key === ' ') { e.preventDefault(); toggleTransport(); }
+    else if (/^[1-8]$/.test(e.key) && state.armedLibraryPath) { e.preventDefault(); triggerCue(parseInt(e.key, 10)); }
   });
 }
 
 async function init() {
   wireStaticControls();
+  wireLibraryPreview();
   try {
     const project = await apiGet('/api/project');
     loadProjectIntoUI(project);
@@ -1193,6 +1455,11 @@ async function init() {
   initHistory();
   refreshLibraryFromCache();
   refreshProjectList();
+  try {
+    state.libraryMeta = await apiGet('/api/library/meta');
+  } catch { /* keep {tracks:{},crates:[]} default -- backend still warming up */ }
+  renderCrateBar();
+  renderLibrary();
 }
 
 init();

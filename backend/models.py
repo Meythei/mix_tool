@@ -6,7 +6,7 @@ meaningful edit; the backend just validates, persists and renders it.
 """
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -93,3 +93,28 @@ class RenderRequest(BaseModel):
     start: float = 0.0
     end: Optional[float] = None
     max_duration: Optional[float] = 600.0
+
+
+# ---- library metadata: hot cues + crates. Kept separate from the analysis
+# cache (library_cache.json) because it's user-authored, not derived from the
+# audio file, and must survive a re-scan/re-analyze of the same path.
+
+class LibraryCue(BaseModel):
+    index: int              # pad position, 1-8 (rekordbox-style hot cues)
+    time: float = 0.0
+    label: str = ""
+
+
+class LibraryTrackMeta(BaseModel):
+    cues: List[LibraryCue] = Field(default_factory=list)
+
+
+class LibraryCrate(BaseModel):
+    id: str
+    name: str
+    paths: List[str] = Field(default_factory=list)
+
+
+class LibraryMeta(BaseModel):
+    tracks: Dict[str, LibraryTrackMeta] = Field(default_factory=dict)
+    crates: List[LibraryCrate] = Field(default_factory=list)

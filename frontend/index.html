@@ -65,7 +65,20 @@
           <option value="compat">Compatible ★</option>
         </select>
       </div>
-      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置。アーム中はハーモニックミックス互換の曲がハイライトされます。</div>
+      <div id="crateBar" class="crate-bar"></div>
+
+      <div id="libraryPreview" class="library-preview hidden">
+        <div class="lp-row">
+          <button id="lpPlay" class="mini-btn lp-play" title="Play/Pause pre-listen (raw source file)">▶</button>
+          <span id="lpTrackName" class="lp-name"></span>
+          <span id="lpTime" class="lp-time">0:00.0 / 0:00.0</span>
+        </div>
+        <canvas id="lpWaveCanvas" class="lp-wave" height="40"></canvas>
+        <div id="lpCues" class="lp-cues"></div>
+        <audio id="libraryPreviewAudio" preload="metadata"></audio>
+      </div>
+
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置。アーム中はハーモニックミックス互換の曲がハイライトされ、上のプレビューデッキで試聴・ホットキュー(数字キー1-8)が使えます。</div>
       <div id="libraryList" class="library-list"></div>
     </aside>
 

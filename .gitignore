@@ -9,6 +9,7 @@ __pycache__/
 
 # Runtime data (machine-specific; regenerated on first run)
 backend/data/library_cache.json
+backend/data/library_meta.json
 backend/data/exports/*.wav
 backend/data/projects/*.json
 

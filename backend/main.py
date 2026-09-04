@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import library
 import storage
-from models import Project, Deck, RenderRequest
+from models import Project, Deck, RenderRequest, LibraryMeta
 from engine.render import render_to_wav
 
 # desktop_app.py (the frozen .exe entry point) sets this to the bundle's
@@ -125,6 +125,34 @@ async def api_library_reanalyze(req: dict):
     library.invalidate(path, CACHE_PATH)
     entry = await run_in_threadpool(library.get_or_analyze, path, CACHE_PATH)
     return entry
+
+
+@app.get("/api/library/meta")
+async def api_library_meta_get():
+    return library.get_meta(CACHE_PATH)
+
+
+@app.put("/api/library/meta")
+async def api_library_meta_put(meta: LibraryMeta):
+    data = meta.model_dump()
+    await run_in_threadpool(library.save_meta, data, CACHE_PATH)
+    return data
+
+
+@app.get("/api/library/audio")
+async def api_library_audio(path: str):
+    # Pre-listen deck (rekordbox-style): streams a source file straight from
+    # disk, unrelated to the offline mix render. Restricted to paths already
+    # known to the library cache -- i.e. previously scanned -- so this can't
+    # be used as an arbitrary local file-read via query string.
+    entries = library.get_library(CACHE_PATH)
+    known_paths = {e["path"] for e in entries}
+    if path not in known_paths:
+        raise HTTPException(status_code=404, detail="Unknown library path")
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(p))
 
 
 # ---------------------------------------------------------------- project --
