@@ -127,6 +127,33 @@ async def api_library_reanalyze(req: dict):
     return entry
 
 
+@app.get("/api/library/audio")
+async def api_library_audio(path: str):
+    # Only ever serve files the library already knows about (i.e. that turned
+    # up in a folder scan) -- never an arbitrary path handed in by the client.
+    known = {e["path"] for e in library.get_library(CACHE_PATH)}
+    if path not in known:
+        raise HTTPException(status_code=404, detail="Unknown library path")
+    file_path = Path(path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(file_path))
+
+
+class CuesRequest(BaseModel):
+    path: str
+    cues: list
+
+
+@app.post("/api/library/cues")
+async def api_library_cues(req: CuesRequest):
+    try:
+        entry = await run_in_threadpool(library.set_cues, req.path, req.cues, CACHE_PATH)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown library path")
+    return entry
+
+
 # ---------------------------------------------------------------- project --
 
 @app.get("/api/project")

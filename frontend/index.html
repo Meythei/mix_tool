@@ -33,6 +33,15 @@
       </button>
     </div>
 
+    <div class="history-controls">
+      <button id="btnUndo" class="btn icon" title="Undo (Ctrl+Z)" disabled>
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+      </button>
+      <button id="btnRedo" class="btn icon" title="Redo (Ctrl+Shift+Z)" disabled>
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8 6.85 8 2.92 11.03 1.62 15.2l2.37.78C4.95 12.8 7.96 10.5 11.5 10.5c1.96 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"/></svg>
+      </button>
+    </div>
+
     <div class="project-controls">
       <input id="projectName" type="text" class="m3-text-input" value="Untitled Mix" spellcheck="false">
       <button id="btnSave" class="btn outlined">Save</button>
@@ -49,8 +58,31 @@
         <input id="scanFolder" type="text" class="m3-text-input" placeholder="C:\Music\... フォルダを指定してScan">
         <button id="btnScan" class="btn tonal small">Scan</button>
       </div>
-      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置 ・ ▶ で試聴</div>
+
+      <div id="auditionBar" class="audition-bar" hidden>
+        <div class="audition-head">
+          <button id="auditionPlay" class="btn icon small" title="Play/Pause (Space)">
+            <svg viewBox="0 0 24 24" class="btn-icon"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <div class="audition-name" id="auditionName">—</div>
+          <button id="auditionClose" class="btn icon small" title="Close">
+            <svg viewBox="0 0 24 24" class="btn-icon"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 7 19l5.59-5.59L17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+        <canvas id="auditionWave" class="audition-wave" height="46"></canvas>
+        <div class="audition-time"><span id="auditionCur">0:00.0</span><span id="auditionDur">0:00.0</span></div>
+        <div class="cue-pads" id="cuePads"></div>
+        <div class="audition-hint">数字キー1〜4: 空なら現在位置にキュー、あればジャンプ / Shift+数字でクリア</div>
+      </div>
+
+      <div class="suggest-bar">
+        <button id="btnSuggest" class="btn tonal small full">✨ Suggest compatible tracks</button>
+      </div>
+      <div id="suggestPanel" class="suggest-panel" hidden></div>
+
       <div id="libraryList" class="library-list"></div>
+      <audio id="auditionAudio" preload="none"></audio>
     </aside>
 
     <main id="timelineArea">

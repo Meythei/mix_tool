@@ -84,6 +84,17 @@ def invalidate(path: str, cache_path: Path) -> None:
             _save_cache(cache_path, cache)
 
 
+def set_cues(path: str, cues: list, cache_path: Path) -> dict:
+    """Persist rekordbox-style hot cue points (list of {time, label}) for one track."""
+    with _lock:
+        cache = _load_cache(cache_path)
+        if path not in cache:
+            raise KeyError(path)
+        cache[path]["cues"] = cues
+        _save_cache(cache_path, cache)
+        return _entry_for(path, cache)
+
+
 def get_or_analyze(path: str, cache_path: Path) -> dict:
     with _lock:
         cache = _load_cache(cache_path)
