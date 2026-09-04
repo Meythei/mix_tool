@@ -240,6 +240,10 @@ input[type=text]:focus, input[type=number]:focus {
 .library-scan { display: flex; gap: 6px; margin-bottom: 8px; }
 .library-scan input { flex: 1; min-width: 0; }
 
+.library-filter-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.library-filter-row input { flex: 1; min-width: 0; padding: 6px 9px; }
+.m3-select.small { max-width: 104px; padding: 5px 6px; font-size: 11px; flex-shrink: 0; }
+
 .library-hint { font-size: 10.5px; color: var(--m3-on-surface-variant); margin-bottom: 10px; line-height: 1.5; opacity: 0.85; }
 
 .library-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
@@ -253,13 +257,17 @@ input[type=text]:focus, input[type=number]:focus {
 .library-item.armed { border-color: var(--m3-primary); background: var(--m3-primary-container); }
 .library-item.armed .li-name { color: var(--m3-on-primary-container); }
 .library-item.error { opacity: 0.5; }
+.library-item.compat-perfect { border-color: var(--m3-tertiary); box-shadow: 0 0 0 1px var(--m3-tertiary); }
+.library-item.compat-good { border-color: color-mix(in srgb, var(--m3-tertiary) 55%, var(--m3-outline-variant)); }
 .li-name { font-size: 12px; font-weight: 500; font-variation-settings: 'wght' 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.li-meta { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+.li-meta { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
 .li-chip {
   font-size: 9.5px; font-weight: 700; letter-spacing: .2px; padding: 2px 7px; border-radius: var(--m3-shape-full);
   background: var(--m3-surface-container-highest); color: var(--m3-on-surface-variant);
 }
 .li-chip.bpm { background: var(--m3-tertiary-container); color: var(--m3-on-tertiary-container); }
+.li-chip.camelot { background: var(--m3-secondary-container); color: var(--m3-on-secondary-container); font-family: 'Roboto Mono', monospace; }
+.li-chip.compat-star { background: var(--m3-tertiary); color: var(--m3-on-tertiary); }
 .li-wave { height: 22px; margin-top: 6px; opacity: 0.9; border-radius: var(--m3-shape-xs); overflow: hidden; }
 
 /* ================================================================ timeline */
@@ -288,7 +296,14 @@ input[type=text]:focus, input[type=number]:focus {
 .zoom-label { font-size: 10.5px; color: var(--m3-on-surface-variant); font-weight: 600; }
 
 #timelineScroll { flex: 1; overflow: auto; position: relative; background: var(--m3-surface-dim); }
-#timelineInner { display: flex; flex-direction: column; width: max-content; min-width: 100%; }
+#timelineInner { display: flex; flex-direction: column; width: max-content; min-width: 100%; position: relative; }
+
+.loop-overlay {
+  position: absolute; top: 0; bottom: 0; display: none; pointer-events: none; z-index: 4;
+  background: color-mix(in srgb, var(--m3-primary) 14%, transparent);
+  border-left: 1.5px solid var(--m3-primary); border-right: 1.5px solid var(--m3-primary);
+}
+.loop-overlay.on { display: block; }
 
 .ruler-row { display: flex; position: sticky; top: 0; z-index: 5; }
 .ruler-spacer { width: 228px; flex-shrink: 0; position: sticky; left: 0; z-index: 6; background: var(--m3-surface-container); border-bottom: 1px solid var(--m3-outline-variant); }

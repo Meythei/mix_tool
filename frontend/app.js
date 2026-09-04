@@ -13,6 +13,11 @@ const state = {
   expandedAutomation: {},
   timelineWidthPx: 800,
   deckCanvases: {},
+  history: null,          // { stack: [json...], index, restoring } -- see initHistory()
+  loop: { enabled: false, start: 0, end: 0 },
+  clipboard: null,        // { clip, deckId } -- see copySelectedClip()
+  librarySearch: '',
+  librarySort: 'name',
 };
 
 // ---------------------------------------------------------------- utils --
@@ -62,8 +67,55 @@ async function apiPut(path, body) {
 
 let _syncTimer = null;
 function scheduleSync() {
+  pushHistorySnapshot();
   if (_syncTimer) clearTimeout(_syncTimer);
   _syncTimer = setTimeout(() => { apiPut('/api/project', state.project).catch(err => console.warn('sync failed', err)); }, 500);
+}
+
+// ------------------------------------------------------------- undo/redo --
+// A linear history of full project snapshots (JSON strings). scheduleSync()
+// is already called at exactly the moments a user edit is "committed" (drag
+// end, input change, button click) -- never mid-drag or per-keystroke -- so
+// hooking history capture there gives one undo step per meaningful action for
+// free, without threading before/after snapshots through every mutation site.
+
+function snapshotProject() { return JSON.stringify(state.project); }
+
+function initHistory() {
+  state.history = { stack: [snapshotProject()], index: 0, restoring: false };
+  updateUndoRedoButtons();
+}
+
+function pushHistorySnapshot() {
+  const h = state.history;
+  if (!h || h.restoring || !state.project) return;
+  const snap = snapshotProject();
+  if (snap === h.stack[h.index]) return;
+  h.stack = h.stack.slice(0, h.index + 1);
+  h.stack.push(snap);
+  if (h.stack.length > 150) h.stack.shift();
+  h.index = h.stack.length - 1;
+  updateUndoRedoButtons();
+}
+
+function applyHistoryIndex(newIndex) {
+  const h = state.history;
+  if (!h || newIndex < 0 || newIndex >= h.stack.length) return;
+  h.restoring = true;
+  h.index = newIndex;
+  loadProjectIntoUI(JSON.parse(h.stack[newIndex]), { keepUiState: true });
+  h.restoring = false;
+  scheduleSync();
+  updateUndoRedoButtons();
+}
+
+function undo() { const h = state.history; if (h && h.index > 0) applyHistoryIndex(h.index - 1); }
+function redo() { const h = state.history; if (h && h.index < h.stack.length - 1) applyHistoryIndex(h.index + 1); }
+
+function updateUndoRedoButtons() {
+  const h = state.history;
+  document.getElementById('btnUndo').disabled = !h || h.index <= 0;
+  document.getElementById('btnRedo').disabled = !h || h.index >= h.stack.length - 1;
 }
 
 let _redrawScheduled = false;
@@ -172,6 +224,77 @@ function drawRuler(w) {
     ctx.fillText(formatTime(t), t * state.pxPerSecond + 3, 24);
   }
   drawPlayhead(ctx, h);
+}
+
+// --------------------------------------------------------- loop region --
+// Ableton-style arrangement loop: drag on the ruler to mark a region, Preview
+// then renders just that span and repeats it (native <audio loop>) so you can
+// audition a transition over and over without re-rendering the whole mix.
+
+function updateLoopUI() {
+  document.getElementById('loopToggle').checked = state.loop.enabled;
+  const label = document.getElementById('loopRangeLabel');
+  label.textContent = (state.loop.enabled && state.loop.end > state.loop.start)
+    ? `${formatTime(state.loop.start)}–${formatTime(state.loop.end)}` : '';
+}
+
+function updateLoopOverlay() {
+  const el = document.getElementById('loopOverlay');
+  const on = state.loop.enabled && state.loop.end > state.loop.start;
+  el.classList.toggle('on', on);
+  if (!on) return;
+  const rulerSpacerW = 228;
+  el.style.left = (rulerSpacerW + state.loop.start * state.pxPerSecond) + 'px';
+  el.style.width = Math.max(2, (state.loop.end - state.loop.start) * state.pxPerSecond) + 'px';
+}
+
+function wireRulerLoop() {
+  const canvas = document.getElementById('rulerCanvas');
+  let downX = null, dragging = false, t0 = 0;
+  const DRAG_THRESHOLD = 4;
+
+  canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    downX = e.clientX - rect.left;
+    dragging = false;
+    t0 = maybeSnapTime(downX / state.pxPerSecond);
+  });
+  window.addEventListener('mousemove', e => {
+    if (downX == null) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    if (!dragging && Math.abs(mx - downX) < DRAG_THRESHOLD) return;
+    dragging = true;
+    const t1 = maybeSnapTime(mx / state.pxPerSecond);
+    state.loop.start = Math.max(0, Math.min(t0, t1));
+    state.loop.end = Math.max(0, Math.max(t0, t1));
+    state.loop.enabled = state.loop.end > state.loop.start;
+    updateLoopUI(); requestRedraw();
+  });
+  window.addEventListener('mouseup', e => {
+    if (downX == null) return;
+    if (!dragging) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      if (mx >= 0 && mx <= rect.width) {
+        state.playhead = Math.max(0, maybeSnapTime(mx / state.pxPerSecond));
+        requestRedraw();
+      }
+    }
+    downX = null; dragging = false;
+  });
+  canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    state.loop.enabled = false;
+    updateLoopUI(); requestRedraw();
+  });
+}
+
+function toggleTransport() {
+  const audio = document.getElementById('previewAudio');
+  if (audio.src && !audio.paused) { audio.pause(); }
+  else if (audio.src) { audio.play().catch(() => {}); }
+  else { doPreview(); }
 }
 
 // ------------------------------------------------------------ clip lane --
@@ -410,6 +533,7 @@ function deckHeaderHTML(deck) {
     <span class="deck-color-dot" style="background:${deck.color}"></span>
     <input class="deck-name" data-field="name" value="${escapeAttr(deck.name)}" spellcheck="false">
     <span class="deck-type-badge ${deck.type}">${deck.type}</span>
+    <button class="mini-btn dup" data-action="duplicate" title="Duplicate deck (with its clips)">⧉</button>
     <button class="mini-btn remove" data-action="remove" title="Remove deck">✕</button>
   </div>
   <div class="deck-btn-row">
@@ -469,6 +593,7 @@ function wireDeckRow(headerEl, deck) {
       if (action === 'mute') deck.mute = !deck.mute;
       else if (action === 'solo') deck.solo = !deck.solo;
       else if (action === 'sync') deck.sync = !deck.sync;
+      else if (action === 'duplicate') { duplicateDeck(deck.id); return; }
       else if (action === 'remove') {
         if (confirm(`Remove deck "${deck.name}"?`)) removeDeck(deck.id);
         return;
@@ -549,6 +674,19 @@ function addDeck(type) {
   rebuildDeckDOM(); scheduleSync();
 }
 
+function duplicateDeck(deckId) {
+  const idx = state.project.decks.findIndex(d => d.id === deckId);
+  if (idx < 0) return;
+  const copy = JSON.parse(JSON.stringify(state.project.decks[idx]));
+  copy.id = uid();
+  copy.name = state.project.decks[idx].name + ' copy';
+  copy.clips.forEach(c => { c.id = uid(); });
+  state.project.decks.splice(idx + 1, 0, copy);
+  const srcExpanded = state.expandedAutomation[deckId];
+  state.expandedAutomation[copy.id] = new Set(srcExpanded ? Array.from(srcExpanded) : []);
+  rebuildDeckDOM(); scheduleSync();
+}
+
 function removeDeck(deckId) {
   state.project.decks = state.project.decks.filter(d => d.id !== deckId);
   delete state.expandedAutomation[deckId];
@@ -579,6 +717,45 @@ function redrawAll() {
     { points: state.project.crossfader.automation, base: state.project.crossfader.value, min: 0, max: 1, color: M3.onSurfaceVariant, ref: 0.5 }, w, 44);
   drawLane(document.getElementById('masterCanvas'),
     { points: state.project.master.automation, base: state.project.master.gain, min: 0, max: 1.5, color: M3.onSurfaceVariant, ref: 1.0 }, w, 44);
+
+  updateLoopOverlay();
+}
+
+// ---------------------------------------------------- harmonic mixing --
+// rekordbox-style key matching, done locally with a fixed lookup table (no
+// model, no network) -- this is the "AI-ish" smart-assist the brief asked
+// for: cheap enough to run on every keystroke, honest about being a
+// heuristic rather than a real recommender.
+
+const CAMELOT_PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const CAMELOT_MAJOR = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1];
+const CAMELOT_MINOR = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10];
+
+function keyToCamelot(keyStr) {
+  if (!keyStr || keyStr === '?') return null;
+  const m = /^([A-G]#?)\s+(major|minor)$/i.exec(keyStr.trim());
+  if (!m) return null;
+  const pc = CAMELOT_PITCH_CLASSES.indexOf(m[1].toUpperCase());
+  if (pc < 0) return null;
+  const isMinor = m[2].toLowerCase() === 'minor';
+  const num = (isMinor ? CAMELOT_MINOR : CAMELOT_MAJOR)[pc];
+  return `${num}${isMinor ? 'A' : 'B'}`;
+}
+
+function camelotCompatibility(a, b) {
+  if (!a || !b || a === b) return a && a === b ? 'perfect' : 'none';
+  const pa = /^(\d{1,2})([AB])$/.exec(a), pb = /^(\d{1,2})([AB])$/.exec(b);
+  if (!pa || !pb) return 'none';
+  const na = parseInt(pa[1], 10), nb = parseInt(pb[1], 10);
+  if (na === nb && pa[2] !== pb[2]) return 'good';        // relative major/minor
+  if (pa[2] === pb[2] && Math.min((na - nb + 12) % 12, (nb - na + 12) % 12) === 1) return 'good'; // adjacent on the wheel
+  return 'none';
+}
+
+function getReferenceEntry() {
+  if (state.armedLibraryPath) return state.libraryByPath.get(state.armedLibraryPath) || null;
+  if (state.selection && state.selection.type === 'clip') return state.libraryByPath.get(state.selection.clip.source_path) || null;
+  return null;
 }
 
 // -------------------------------------------------------------- library --
@@ -586,9 +763,39 @@ function redrawAll() {
 function renderLibrary() {
   const listEl = document.getElementById('libraryList');
   listEl.innerHTML = '';
-  for (const entry of state.library) {
+
+  const ref = getReferenceEntry();
+  const refCamelot = ref ? keyToCamelot(ref.key) : null;
+
+  const q = state.librarySearch.trim().toLowerCase();
+  let entries = state.library.filter(e => {
+    if (!q) return true;
+    return (e.filename || '').toLowerCase().includes(q) || (e.key || '').toLowerCase().includes(q);
+  });
+
+  const compatRank = { perfect: 0, good: 1, none: 2 };
+  const sort = state.librarySort;
+  if (sort === 'bpm') entries = entries.slice().sort((a, b) => (a.bpm || 999) - (b.bpm || 999));
+  else if (sort === 'key') entries = entries.slice().sort((a, b) => (a.key || '~').localeCompare(b.key || '~'));
+  else if (sort === 'duration') entries = entries.slice().sort((a, b) => (a.duration || 0) - (b.duration || 0));
+  else if (sort === 'compat' && refCamelot) {
+    entries = entries.slice().sort((a, b) => {
+      const ca = compatRank[camelotCompatibility(refCamelot, keyToCamelot(a.key))];
+      const cb = compatRank[camelotCompatibility(refCamelot, keyToCamelot(b.key))];
+      if (ca !== cb) return ca - cb;
+      const bpmDiff = (e) => (ref.bpm && e.bpm) ? Math.abs(e.bpm - ref.bpm) : 999;
+      return bpmDiff(a) - bpmDiff(b);
+    });
+  } else entries = entries.slice().sort((a, b) => (a.filename || '').toLowerCase().localeCompare((b.filename || '').toLowerCase()));
+
+  for (const entry of entries) {
+    const camelot = keyToCamelot(entry.key);
+    const compat = (ref && entry !== ref && refCamelot && camelot) ? camelotCompatibility(refCamelot, camelot) : 'none';
     const div = document.createElement('div');
-    div.className = 'library-item' + (state.armedLibraryPath === entry.path ? ' armed' : '') + (entry.error ? ' error' : '');
+    div.className = 'library-item'
+      + (state.armedLibraryPath === entry.path ? ' armed' : '')
+      + (entry.error ? ' error' : '')
+      + (compat === 'perfect' ? ' compat-perfect' : compat === 'good' ? ' compat-good' : '');
     div.draggable = true;
     if (entry.error) div.title = 'Analysis failed: ' + entry.error;
     const bpmText = entry.bpm ? entry.bpm.toFixed(1) : '--';
@@ -597,7 +804,10 @@ function renderLibrary() {
       <div class="li-meta">
         <span class="li-chip bpm">${bpmText} BPM</span>
         ${entry.key ? `<span class="li-chip">${escapeHtml(entry.key)}</span>` : ''}
+        ${camelot ? `<span class="li-chip camelot">${camelot}</span>` : ''}
         ${entry.duration != null ? `<span class="li-chip">${formatTime(entry.duration)}</span>` : ''}
+        ${compat === 'perfect' ? `<span class="li-chip compat-star" title="Perfect key match">★ match</span>` : ''}
+        ${compat === 'good' ? `<span class="li-chip compat-star" title="Harmonically compatible (Camelot wheel)">★ mix</span>` : ''}
       </div>
       <canvas class="li-wave" width="220" height="22"></canvas>`;
     listEl.appendChild(div);
@@ -656,6 +866,7 @@ async function refreshLibraryFromCache(retry = 0) {
 // ------------------------------------------------------------ inspector --
 
 function renderInspector() {
+  renderLibrary(); // selection changed -> the harmonic-compatibility reference may have too
   const el = document.getElementById('inspectorContent');
   const sel = state.selection;
   if (!sel) {
@@ -724,6 +935,42 @@ function renderInspector() {
   }
 }
 
+// ------------------------------------------------------- clip clipboard --
+
+function copySelectedClip() {
+  const sel = state.selection;
+  if (!sel || sel.type !== 'clip') return;
+  state.clipboard = { clip: JSON.parse(JSON.stringify(sel.clip)), deckId: sel.deck.id };
+  toast('Copied "' + (sel.clip.label || basename(sel.clip.source_path)) + '"');
+}
+
+function pasteClip() {
+  const cb = state.clipboard;
+  if (!cb || !state.project) return;
+  const deck = (state.selection && state.selection.deck) ||
+    state.project.decks.find(d => d.id === cb.deckId) || state.project.decks[0];
+  if (!deck) return;
+  const clip = JSON.parse(JSON.stringify(cb.clip));
+  clip.id = uid();
+  clip.timeline_start = maybeSnapTime(state.playhead || 0);
+  deck.clips.push(clip);
+  state.selection = { type: 'clip', clip, deck };
+  rebuildDeckDOM(); renderInspector(); scheduleSync();
+  toast('Pasted at ' + formatTime(clip.timeline_start));
+}
+
+function duplicateSelectedClip() {
+  const sel = state.selection;
+  if (!sel || sel.type !== 'clip') return;
+  const dur = estimateClipDuration(sel.clip, sel.deck, state.project);
+  const clip = JSON.parse(JSON.stringify(sel.clip));
+  clip.id = uid();
+  clip.timeline_start = maybeSnapTime(sel.clip.timeline_start + dur);
+  sel.deck.clips.push(clip);
+  state.selection = { type: 'clip', clip, deck: sel.deck };
+  rebuildDeckDOM(); renderInspector(); scheduleSync();
+}
+
 function deleteSelectedViaKey() {
   const sel = state.selection;
   if (!sel) return;
@@ -751,12 +998,25 @@ function emptyProjectFallback() {
   };
 }
 
-function loadProjectIntoUI(project) {
+function loadProjectIntoUI(project, opts) {
+  const keepUiState = !!(opts && opts.keepUiState);
   state.project = project;
-  state.selection = null;
-  state.armedLibraryPath = null;
-  state.expandedAutomation = {};
-  for (const deck of project.decks) state.expandedAutomation[deck.id] = new Set(deck.type === 'track' ? ['gain'] : []);
+  if (!keepUiState) {
+    state.selection = null;
+    state.armedLibraryPath = null;
+    state.expandedAutomation = {};
+    state.loop = { enabled: false, start: 0, end: 0 };
+    for (const deck of project.decks) state.expandedAutomation[deck.id] = new Set(deck.type === 'track' ? ['gain'] : []);
+  } else {
+    // Undo/redo: keep which lanes are open, but drop a selection that points
+    // at an object instance the fresh JSON.parse() no longer shares identity
+    // with (clip/point refs), and fill in automation-lane sets for any deck
+    // that didn't exist yet at this point in history.
+    state.selection = null;
+    for (const deck of project.decks) {
+      if (!state.expandedAutomation[deck.id]) state.expandedAutomation[deck.id] = new Set(deck.type === 'track' ? ['gain'] : []);
+    }
+  }
 
   document.getElementById('projectName').value = project.name;
   document.getElementById('masterBpm').value = project.master_bpm;
@@ -770,6 +1030,7 @@ function loadProjectIntoUI(project) {
 
   rebuildDeckDOM();
   renderInspector();
+  updateLoopUI();
 }
 
 async function doSave() {
@@ -794,6 +1055,7 @@ async function doLoad(filename) {
   try {
     const project = await apiPost(`/api/projects/${encodeURIComponent(filename)}/load`, {});
     loadProjectIntoUI(project);
+    initHistory();
     toast('Loaded ' + project.name);
   } catch (err) { toast('Load failed: ' + err.message, true); }
 }
@@ -802,19 +1064,25 @@ async function doNew() {
   if (!confirm('現在のプロジェクトの未保存の変更は失われます。新規作成しますか？')) return;
   const project = await apiPost('/api/project/new', {});
   loadProjectIntoUI(project);
+  initHistory();
 }
 
 // ----------------------------------------------------------- transport --
 
 async function doPreview() {
-  setStatus('Rendering preview…');
+  const useLoop = state.loop.enabled && state.loop.end > state.loop.start;
+  setStatus(useLoop ? 'Rendering loop…' : 'Rendering preview…');
   document.getElementById('btnPreview').disabled = true;
   try {
-    const res = await apiPost('/api/preview', { project: state.project, start: 0, end: null, max_duration: 180 });
+    const req = useLoop
+      ? { project: state.project, start: state.loop.start, end: state.loop.end, max_duration: 180 }
+      : { project: state.project, start: 0, end: null, max_duration: 180 };
+    const res = await apiPost('/api/preview', req);
     const audio = document.getElementById('previewAudio');
     audio.src = res.url;
+    audio.loop = useLoop;
     audio.play().catch(() => {});
-    setStatus(`OK (${formatTime(res.duration)})`);
+    setStatus(`OK (${formatTime(res.duration)})` + (useLoop ? ' loop' : ''));
     if (res.warnings && res.warnings.length) toast(res.warnings.join(' / '));
   } catch (err) {
     toast('Preview failed: ' + err.message, true); setStatus('');
@@ -852,12 +1120,6 @@ function wireStaticControls() {
     () => ({ points: state.project.master.automation, base: state.project.master.gain, min: 0, max: 1.5, color: M3.onSurfaceVariant, ref: 1.0, label: 'Master Gain' }),
     onLaneChange);
 
-  document.getElementById('rulerCanvas').addEventListener('mousedown', e => {
-    const rect = e.target.getBoundingClientRect();
-    state.playhead = Math.max(0, maybeSnapTime((e.clientX - rect.left) / state.pxPerSecond));
-    requestRedraw();
-  });
-
   document.getElementById('masterBpm').addEventListener('input', e => { state.project.master_bpm = parseFloat(e.target.value) || 120; requestRedraw(); });
   document.getElementById('masterBpm').addEventListener('change', scheduleSync);
   document.getElementById('crossfaderValue').addEventListener('input', e => { state.project.crossfader.value = parseFloat(e.target.value); requestRedraw(); });
@@ -885,15 +1147,37 @@ function wireStaticControls() {
   document.getElementById('projectList').addEventListener('change', e => doLoad(e.target.value));
   document.getElementById('btnAddTrackDeck').addEventListener('click', () => addDeck('track'));
   document.getElementById('btnAddShotDeck').addEventListener('click', () => addDeck('shot'));
+  document.getElementById('btnUndo').addEventListener('click', undo);
+  document.getElementById('btnRedo').addEventListener('click', redo);
   document.getElementById('zoomIn').addEventListener('click', () => { state.pxPerSecond = clamp(state.pxPerSecond * 1.4, 6, 400); requestRedraw(); });
   document.getElementById('zoomOut').addEventListener('click', () => { state.pxPerSecond = clamp(state.pxPerSecond / 1.4, 6, 400); requestRedraw(); });
   document.getElementById('snapToggle').addEventListener('change', e => { state.snap = e.target.checked; });
+  document.getElementById('loopToggle').addEventListener('change', e => {
+    state.loop.enabled = e.target.checked;
+    if (state.loop.enabled && state.loop.end <= state.loop.start) { state.loop.start = 0; state.loop.end = 8; }
+    updateLoopUI(); requestRedraw();
+  });
+  document.getElementById('librarySearch').addEventListener('input', e => { state.librarySearch = e.target.value; renderLibrary(); });
+  document.getElementById('librarySort').addEventListener('change', e => { state.librarySort = e.target.value; renderLibrary(); });
+
+  wireRulerLoop();
 
   window.addEventListener('keydown', e => {
     const tag = document.activeElement && document.activeElement.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
+    const mod = e.ctrlKey || e.metaKey;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); doSave(); }
+      return;
+    }
+    if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    else if ((mod && e.shiftKey && e.key.toLowerCase() === 'z') || (mod && e.key.toLowerCase() === 'y')) { e.preventDefault(); redo(); }
+    else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); doSave(); }
+    else if (mod && e.key.toLowerCase() === 'c') { e.preventDefault(); copySelectedClip(); }
+    else if (mod && e.key.toLowerCase() === 'v') { e.preventDefault(); pasteClip(); }
+    else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelectedClip(); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { if (state.selection) { deleteSelectedViaKey(); e.preventDefault(); } }
     else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
+    else if (e.key === ' ') { e.preventDefault(); toggleTransport(); }
   });
 }
 
@@ -906,6 +1190,7 @@ async function init() {
     toast('Backend not reachable: ' + err.message, true);
     loadProjectIntoUI(emptyProjectFallback());
   }
+  initHistory();
   refreshLibraryFromCache();
   refreshProjectList();
 }

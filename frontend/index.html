@@ -21,6 +21,12 @@
     </label>
 
     <div class="toolbar-dock">
+      <button id="btnUndo" class="btn icon" title="Undo (Ctrl+Z)" disabled>
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+      </button>
+      <button id="btnRedo" class="btn icon" title="Redo (Ctrl+Y)" disabled>
+        <svg viewBox="0 0 24 24" class="btn-icon"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8 6.85 8 2.92 11.03 1.75 15.2l2.37.78c1.05-3.19 4.06-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 22h9V7l-3.6 3.6z"/></svg>
+      </button>
       <button id="btnPreview" class="btn tonal">
         <svg viewBox="0 0 24 24" class="btn-icon"><path d="M8 5v14l11-7z"/></svg>
         Preview
@@ -49,7 +55,17 @@
         <input id="scanFolder" type="text" class="m3-text-input" placeholder="C:\Music\... フォルダを指定してScan">
         <button id="btnScan" class="btn tonal small">Scan</button>
       </div>
-      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置</div>
+      <div class="library-filter-row">
+        <input id="librarySearch" type="text" class="m3-text-input" placeholder="検索 (ファイル名・キー)">
+        <select id="librarySort" class="m3-select small">
+          <option value="name">Name</option>
+          <option value="bpm">BPM</option>
+          <option value="key">Key</option>
+          <option value="duration">Duration</option>
+          <option value="compat">Compatible ★</option>
+        </select>
+      </div>
+      <div class="library-hint">クリックしてアーム → デッキのレーンをクリックで配置。アーム中はハーモニックミックス互換の曲がハイライトされます。</div>
       <div id="libraryList" class="library-list"></div>
     </aside>
 
@@ -60,6 +76,10 @@
           <button id="btnAddShotDeck" class="btn segment">+ Shot Deck</button>
         </div>
         <div class="spacer"></div>
+        <label class="m3-switch-field" title="ドラッグでループ範囲を設定・右クリックで解除・Previewはこの範囲をループ再生">
+          <span class="m3-switch"><input type="checkbox" id="loopToggle"><span class="m3-switch-track"><span class="m3-switch-thumb"></span></span></span>
+          Loop <span class="hint" id="loopRangeLabel"></span>
+        </label>
         <label class="m3-switch-field">
           <span class="m3-switch"><input type="checkbox" id="snapToggle" checked><span class="m3-switch-track"><span class="m3-switch-thumb"></span></span></span>
           Snap to beat
@@ -73,6 +93,7 @@
 
       <div id="timelineScroll">
         <div id="timelineInner">
+          <div id="loopOverlay" class="loop-overlay"></div>
           <div class="ruler-row">
             <div class="ruler-spacer"></div>
             <canvas id="rulerCanvas" height="28"></canvas>
