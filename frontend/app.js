@@ -20,6 +20,8 @@ const state = {
   librarySort: 'name',
   libraryMeta: { tracks: {}, crates: [] },   // hot cues + crates, synced via /api/library/meta
   activeCrateId: null,
+  audioCtx: null,          // shared Web Audio context for VU metering -- see setupVuMeter()
+  vuMeters: [],
 };
 
 // ---------------------------------------------------------------- utils --
@@ -981,6 +983,93 @@ async function refreshLibraryFromCache(retry = 0) {
   } catch { /* backend still warming up */ }
 }
 
+// -------------------------------------------------------------- VU meters --
+// Level metering for the two <audio> elements (main mix preview + library
+// pre-listen deck). Rekordbox/Ableton both show live signal level on every
+// deck; we had none. Routes each element through a shared AudioContext ->
+// AnalyserNode -> destination graph (createMediaElementSource can only be
+// called once per <audio> element ever, hence the `bound` guard) and paints
+// a small RMS bar with a decaying peak marker at ~60fps.
+
+function setupVuMeter(audioEl, canvas, cssW, cssH) {
+  const meter = { audio: audioEl, canvas, w: cssW, h: cssH, analyser: null, data: null, level: 0, peak: 0, bound: false };
+  audioEl.addEventListener('play', () => bindVuMeter(meter));
+  state.vuMeters.push(meter);
+  return meter;
+}
+
+function bindVuMeter(meter) {
+  if (meter.bound) {
+    if (state.audioCtx && state.audioCtx.state === 'suspended') state.audioCtx.resume().catch(() => {});
+    return;
+  }
+  meter.bound = true;
+  try {
+    if (!state.audioCtx) state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = state.audioCtx;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const source = ctx.createMediaElementSource(meter.audio);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.55;
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+    meter.analyser = analyser;
+    meter.data = new Uint8Array(analyser.fftSize);
+  } catch (err) {
+    // Web Audio unavailable/blocked -- meter just stays flat, playback itself is unaffected.
+    meter.analyser = null;
+  }
+}
+
+function drawVuMeter(meter) {
+  const w = meter.w, h = meter.h;
+  if (!w || !h) return;
+  const ctx = meter.canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0C0C11';
+  ctx.fillRect(0, 0, w, h);
+
+  if (meter.analyser && !meter.audio.paused) {
+    meter.analyser.getByteTimeDomainData(meter.data);
+    let sumSq = 0;
+    for (let i = 0; i < meter.data.length; i++) { const v = (meter.data[i] - 128) / 128; sumSq += v * v; }
+    meter.level = clamp(Math.sqrt(sumSq / meter.data.length) * 1.8, 0, 1);
+    meter.peak = Math.max(meter.level, meter.peak - 0.015);
+  } else {
+    meter.level = Math.max(0, meter.level - 0.06);
+    meter.peak = Math.max(0, meter.peak - 0.015);
+  }
+
+  const litW = Math.round(meter.level * (w - 4));
+  if (litW > 0) {
+    const grad = ctx.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, '#9BE3AE');
+    grad.addColorStop(0.65, '#F0C05A');
+    grad.addColorStop(1, '#FFB4AB');
+    ctx.fillStyle = grad;
+    ctx.fillRect(2, 2, litW, h - 4);
+  }
+  const peakX = clamp(2 + meter.peak * (w - 4), 2, w - 3);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(peakX, 2, 1.5, h - 4);
+}
+
+function vuLoop() {
+  for (const meter of state.vuMeters) drawVuMeter(meter);
+  requestAnimationFrame(vuLoop);
+}
+
+function initVuMeters() {
+  const previewCanvas = document.getElementById('previewVu');
+  const lpCanvas = document.getElementById('lpVu');
+  setupCanvasDPI(previewCanvas, 54, 14);
+  setupCanvasDPI(lpCanvas, 40, 16);
+  setupVuMeter(document.getElementById('previewAudio'), previewCanvas, 54, 14);
+  setupVuMeter(document.getElementById('libraryPreviewAudio'), lpCanvas, 40, 16);
+  requestAnimationFrame(vuLoop);
+}
+
 // ------------------------------------------------------ library pre-listen --
 // rekordbox-style "browser preview deck": plays the raw source file directly
 // (via /api/library/audio, unrelated to the offline mix render engine) so a
@@ -1012,6 +1101,29 @@ function updatePreviewDeckVisibility() {
   const entry = state.libraryByPath.get(path);
   document.getElementById('lpTrackName').textContent = entry ? entry.filename : basename(path);
   renderCuePads();
+  drawPreviewWave();
+  updateBeatJumpUI();
+}
+
+// Rekordbox-style beat jump: shift the pre-listen playhead by a fixed number
+// of beats derived from the analyzed source BPM, instead of a raw time skip,
+// so hopping through a track stays on the beat grid.
+function updateBeatJumpUI() {
+  const path = state.armedLibraryPath;
+  const entry = path ? state.libraryByPath.get(path) : null;
+  const bpm = entry && entry.bpm;
+  document.getElementById('bjBpmLabel').textContent = bpm ? `${bpm.toFixed(1)} BPM` : 'BPM不明';
+  document.querySelectorAll('.bj-btn').forEach(btn => { btn.disabled = !bpm; });
+}
+
+function jumpBeats(beats) {
+  const path = state.armedLibraryPath;
+  const entry = path ? state.libraryByPath.get(path) : null;
+  const bpm = entry && entry.bpm;
+  const audio = document.getElementById('libraryPreviewAudio');
+  if (!bpm || !audio.src || !isFinite(audio.duration)) return;
+  const beatSec = 60 / bpm;
+  audio.currentTime = clamp(audio.currentTime + beats * beatSec, 0, audio.duration);
   drawPreviewWave();
 }
 
@@ -1114,12 +1226,15 @@ function wireLibraryPreview() {
     document.getElementById('lpTime').textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration || 0)}`;
     drawPreviewWave();
   });
-  audio.addEventListener('loadedmetadata', () => drawPreviewWave());
+  audio.addEventListener('loadedmetadata', () => { drawPreviewWave(); updateBeatJumpUI(); });
   canvas.addEventListener('click', e => {
     if (!audio.src || !isFinite(audio.duration)) return;
     const rect = canvas.getBoundingClientRect();
     const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
     audio.currentTime = frac * audio.duration;
+  });
+  document.querySelectorAll('.bj-btn').forEach(btn => {
+    btn.addEventListener('click', () => jumpBeats(parseFloat(btn.dataset.beats)));
   });
 }
 
@@ -1439,12 +1554,15 @@ function wireStaticControls() {
     else if (e.key === 'Escape') { state.armedLibraryPath = null; state.selection = null; renderLibrary(); requestRedraw(); renderInspector(); }
     else if (e.key === ' ') { e.preventDefault(); toggleTransport(); }
     else if (/^[1-8]$/.test(e.key) && state.armedLibraryPath) { e.preventDefault(); triggerCue(parseInt(e.key, 10)); }
+    else if (e.key === 'ArrowRight' && state.armedLibraryPath) { e.preventDefault(); jumpBeats(e.shiftKey ? 4 : 1); }
+    else if (e.key === 'ArrowLeft' && state.armedLibraryPath) { e.preventDefault(); jumpBeats(e.shiftKey ? -4 : -1); }
   });
 }
 
 async function init() {
   wireStaticControls();
   wireLibraryPreview();
+  initVuMeters();
   try {
     const project = await apiGet('/api/project');
     loadProjectIntoUI(project);

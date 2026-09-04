@@ -33,6 +33,7 @@
       </button>
       <span id="renderStatus" class="render-status"></span>
       <audio id="previewAudio" controls></audio>
+      <canvas id="previewVu" class="vu-meter" title="Master preview level"></canvas>
       <button id="btnExport" class="btn filled">
         <svg viewBox="0 0 24 24" class="btn-icon"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.41 1.41L11 5.83V16h2V5.83l3.09 3.08 1.41-1.41L12 2z" transform="rotate(180 12 11)"/></svg>
         Export WAV
@@ -71,9 +72,17 @@
         <div class="lp-row">
           <button id="lpPlay" class="mini-btn lp-play" title="Play/Pause pre-listen (raw source file)">▶</button>
           <span id="lpTrackName" class="lp-name"></span>
+          <canvas id="lpVu" class="vu-meter" title="Pre-listen level"></canvas>
           <span id="lpTime" class="lp-time">0:00.0 / 0:00.0</span>
         </div>
         <canvas id="lpWaveCanvas" class="lp-wave" height="40"></canvas>
+        <div id="lpBeatJump" class="lp-beatjump">
+          <button class="mini-btn bj-btn" data-beats="-4" title="4拍戻る (Shift+←)">−4</button>
+          <button class="mini-btn bj-btn" data-beats="-1" title="1拍戻る (←)">−1</button>
+          <span id="bjBpmLabel" class="bj-label"></span>
+          <button class="mini-btn bj-btn" data-beats="1" title="1拍進む (→)">+1</button>
+          <button class="mini-btn bj-btn" data-beats="4" title="4拍進む (Shift+→)">+4</button>
+        </div>
         <div id="lpCues" class="lp-cues"></div>
         <audio id="libraryPreviewAudio" preload="metadata"></audio>
       </div>
